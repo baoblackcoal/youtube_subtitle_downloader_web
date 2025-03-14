@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import SubtitleForm from '@/components/SubtitleForm';
 import FeatureList from '@/components/FeatureList';
+import YouTubeDemo from '@/components/YouTubeDemo';
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
@@ -15,8 +16,6 @@ export default function Home() {
         <h2 className="text-2xl font-bold mb-6 text-center">下载 YouTube 字幕</h2>
         
         <SubtitleForm 
-          isLoading={isLoading}
-          setIsLoading={setIsLoading}
           setError={setError}
           setSuccess={setSuccess}
         />
@@ -33,6 +32,8 @@ export default function Home() {
           </div>
         )}
       </div>
+      
+      <YouTubeDemo />
       
       <FeatureList />
     </div>
