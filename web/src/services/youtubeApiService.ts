@@ -8,11 +8,29 @@ export class YouTubeApiService {
   private apiBaseUrl: string;
   private maxRetries: number = 3;
   private retryDelay: number = 1000; // 1 second
+  private isVercelEnvironment: boolean = false;
 
   constructor() {
     // 动态获取当前域名和端口
     this.apiBaseUrl = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : '';
+    
+    // 检测是否为Vercel环境
+    this.isVercelEnvironment = this.checkIfVercelEnvironment();
+    
     console.log('API Base URL:', this.apiBaseUrl);
+    console.log('Is Vercel Environment:', this.isVercelEnvironment);
+  }
+
+  /**
+   * 检测当前是否为Vercel环境
+   */
+  private checkIfVercelEnvironment(): boolean {
+    if (typeof window === 'undefined') return false;
+    
+    const hostname = window.location.hostname;
+    return hostname.includes('vercel') || 
+           hostname.endsWith('.vercel.app') || 
+           hostname === 'youtube-subtitle-downloader-web.vercel.app';
   }
 
   /**
@@ -25,6 +43,23 @@ export class YouTubeApiService {
   private async fetchWithRetry(url: string, config: any, retries = this.maxRetries): Promise<any> {
     try {
       console.log(`Fetching URL: ${url}`);
+      
+      // 如果是Vercel环境，添加特殊处理
+      if (this.isVercelEnvironment) {
+        config.headers = {
+          ...config.headers,
+          'X-Vercel-Deployment': 'true',
+          'X-Real-IP': '127.0.0.1',  // 尝试避免某些IP限制
+          'Origin': this.apiBaseUrl,
+          'Referer': this.apiBaseUrl,
+        };
+        
+        // 使用较低的超时，避免Vercel的函数超时限制
+        if (config.timeout > 30000) {
+          config.timeout = 30000;
+        }
+      }
+      
       const response = await axios(url, config);
       console.log(`Response status: ${response.status}`);
       return response;
@@ -60,7 +95,7 @@ export class YouTubeApiService {
       
       // 使用我们的API端点而不是直接请求YouTube
       const response = await this.fetchWithRetry(`${this.apiBaseUrl}/api/video-info?videoId=${videoId}`, {
-        timeout: 60000, // 设置60秒超时
+        timeout: this.isVercelEnvironment ? 30000 : 60000, // Vercel环境使用较短的超时
         headers: {
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache',
@@ -126,12 +161,13 @@ export class YouTubeApiService {
   async getSubtitles(videoId: string, subtitleType: 'auto' | 'manual') {
     try {
       console.log('Getting subtitles for:', videoId, 'type:', subtitleType);
+      console.log('Environment:', this.isVercelEnvironment ? 'Vercel' : 'Local');
       
       // 使用我们的API端点而不是直接请求YouTube
       const response = await this.fetchWithRetry(
         `${this.apiBaseUrl}/api/subtitles?videoId=${videoId}&subtitleType=${subtitleType}`,
         {
-          timeout: 60000, // 增加超时时间到60秒
+          timeout: this.isVercelEnvironment ? 30000 : 60000, // Vercel环境使用较短的超时
           headers: {
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache',
@@ -141,6 +177,7 @@ export class YouTubeApiService {
       );
       
       console.log('Subtitles response status:', response.status);
+      console.log('Subtitles response data:', response.data ? 'Data received' : 'No data');
       
       // 检查响应状态
       if (!response.data.success) {
@@ -150,7 +187,8 @@ export class YouTubeApiService {
       
       return { 
         success: true, 
-        subtitles: response.data.subtitles 
+        subtitles: response.data.subtitles,
+        isInlineData: response.data.isInlineData === true
       };
     } catch (error) {
       console.error('获取字幕失败:', error);

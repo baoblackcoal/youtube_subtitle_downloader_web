@@ -22,14 +22,25 @@ export default function SubtitleForm({
   const [format, setFormat] = useState<'vtt' | 'srt' | 'txt'>('txt');
   const [retryCount, setRetryCount] = useState(0);
   const maxRetries = 2;
+  const [isVercelEnvironment, setIsVercelEnvironment] = useState(false);
 
   // 记录环境信息，帮助调试
   useEffect(() => {
+    // 检测Vercel环境
+    const hostname = window.location.hostname;
+    const isVercel = hostname.includes('vercel') || 
+                     hostname.endsWith('.vercel.app') || 
+                     hostname === 'youtube-subtitle-downloader-web.vercel.app';
+    
+    setIsVercelEnvironment(isVercel);
+    
     console.log('Environment:', {
       isDevelopment: process.env.NODE_ENV === 'development',
       isProduction: process.env.NODE_ENV === 'production',
       baseUrl: window.location.origin,
-      userAgent: navigator.userAgent
+      userAgent: navigator.userAgent,
+      isVercelEnvironment: isVercel,
+      hostname
     });
   }, []);
 
@@ -55,7 +66,12 @@ export default function SubtitleForm({
       console.log('Download result:', result);
       
       if (result && result.success) {
-        setSuccess('字幕下载成功！');
+        if (result.isInlineData) {
+          // 如果是内联数据，显示特殊消息
+          setSuccess('演示字幕已下载。由于API限制，无法获取实际YouTube字幕。');
+        } else {
+          setSuccess('字幕下载成功！');
+        }
         // 重置重试计数
         setRetryCount(0);
       } else if (result && !result.success) {
@@ -115,6 +131,16 @@ export default function SubtitleForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      {isVercelEnvironment && (
+        <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4 rounded" role="alert">
+          <p className="font-bold">提示</p>
+          <p>
+            在Vercel环境中，由于API限制，可能无法获取真实的字幕数据。在这种情况下，系统会下载演示字幕以展示功能。
+            如需获取真实字幕，请<a href="https://github.com/jackhanyuan/ytbs" className="underline" target="_blank" rel="noopener noreferrer">下载代码</a>并在本地运行。
+          </p>
+        </div>
+      )}
+      
       <div className="space-y-2">
         <label htmlFor="videoUrl" className="block font-medium">
           YouTube 视频链接
