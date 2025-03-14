@@ -10,16 +10,24 @@ const RETRY_DELAY = 1000; // 1 second
 
 // 使用公共代理服务
 const PUBLIC_PROXIES = [
+  'https://cors-anywhere.herokuapp.com/',
   'https://api.allorigins.win/raw?url=',
-  'https://corsproxy.io/?',
-  'https://cors-anywhere.herokuapp.com/'
+  'https://corsproxy.io/?'
 ];
 
-// 检测是否在Vercel环境中
-function isVercelEnvironment(): boolean {
-  return process.env.VERCEL === '1' || 
-         process.env.VERCEL_ENV === 'production' || 
-         process.env.VERCEL_REGION !== undefined;
+// 获取环境中的YouTube代理URL前缀
+function getYouTubeProxyUrl() {
+  // 检查是否在Vercel环境中
+  const isVercel = process.env.VERCEL === '1';
+  
+  // 获取当前域名，用于构建代理URL
+  const host = process.env.VERCEL_URL || 'localhost:3000';
+  const protocol = isVercel ? 'https' : 'http';
+  
+  // 使用我们在next.config.mjs中配置的代理
+  return isVercel 
+    ? `${protocol}://${host}/youtube-proxy` 
+    : 'https://www.youtube.com';
 }
 
 async function sleep(ms: number) {
@@ -29,13 +37,6 @@ async function sleep(ms: number) {
 async function fetchWithRetry(url: string, config: any, retries = MAX_RETRIES): Promise<any> {
   try {
     console.log(`Fetching URL: ${url}`);
-    
-    // 在Vercel环境中使用较短的超时
-    if (isVercelEnvironment() && config.timeout > 25000) {
-      config.timeout = 25000;
-      console.log('Running in Vercel environment, reducing timeout to 25s');
-    }
-    
     const response = await axios(url, config);
     console.log(`Response status: ${response.status}`);
     return response;
@@ -60,88 +61,36 @@ async function fetchWithRetry(url: string, config: any, retries = MAX_RETRIES): 
 
 // 尝试使用不同的代理获取数据
 async function fetchWithProxies(url: string, config: any): Promise<any> {
-  // 检查是否在Vercel环境
-  const isVercel = isVercelEnvironment();
-  console.log(`Running in Vercel environment: ${isVercel}`);
-  
-  // 在Vercel环境中优先尝试使用特殊方法
-  if (isVercel && url.includes('youtube.com/watch')) {
-    const videoId = new URL(url).searchParams.get('v');
-    if (videoId) {
-      try {
-        console.log('Vercel环境: 尝试使用oEmbed API直接获取...');
-        const videoInfo = await getVideoInfoFromOEmbed(videoId);
-        if (videoInfo && videoInfo.title) {
-          return { 
-            status: 200, 
-            data: JSON.stringify({ title: videoInfo.title })
-          };
-        }
-      } catch (apiError: any) {
-        console.error('oEmbed API获取失败:', apiError.message);
-      }
-    }
-  }
-  
   // 首先尝试直接请求
   try {
     return await fetchWithRetry(url, config);
   } catch (directError: any) {
     console.error('直接请求失败，尝试使用代理:', directError.message);
     
-    // 如果直接请求失败，尝试使用代理
-    for (const proxy of PUBLIC_PROXIES) {
-      try {
-        console.log(`尝试使用代理: ${proxy}`);
-        const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
-        return await fetchWithRetry(proxyUrl, config);
-      } catch (proxyError: any) {
-        console.error(`代理 ${proxy} 请求失败:`, proxyError.message);
-        // 继续尝试下一个代理
-      }
-    }
-    
-    // 如果URL包含YouTube视频ID，返回默认标题
-    if (url.includes('youtube.com/watch')) {
-      const videoId = new URL(url).searchParams.get('v');
-      if (videoId) {
-        return {
-          status: 200,
-          data: JSON.stringify({ title: `Video_${videoId}` })
-        };
+    // 如果直接请求失败，尝试使用内部代理
+    try {
+      // 使用我们配置的代理路径
+      const internalProxyUrl = url.replace('https://www.youtube.com', getYouTubeProxyUrl());
+      console.log(`尝试使用内部代理: ${internalProxyUrl}`);
+      return await fetchWithRetry(internalProxyUrl, config);
+    } catch (internalProxyError: any) {
+      console.error('内部代理请求失败:', internalProxyError.message);
+      
+      // 如果内部代理失败，尝试使用外部公共代理
+      for (const proxy of PUBLIC_PROXIES) {
+        try {
+          console.log(`尝试使用公共代理: ${proxy}`);
+          const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
+          return await fetchWithRetry(proxyUrl, config);
+        } catch (proxyError: any) {
+          console.error(`代理 ${proxy} 请求失败:`, proxyError.message);
+          // 继续尝试下一个代理
+        }
       }
     }
     
     // 如果所有代理都失败，抛出原始错误
     throw directError;
-  }
-}
-
-// 使用YouTube oEmbed API获取视频信息
-async function getVideoInfoFromOEmbed(videoId: string): Promise<{ title: string } | null> {
-  try {
-    // 尝试使用YouTube oEmbed API获取视频信息
-    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
-    
-    const response = await axios.get(oembedUrl, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'application/json',
-        'Origin': 'https://www.youtube.com',
-        'Referer': `https://www.youtube.com/watch?v=${videoId}`,
-      },
-      timeout: isVercelEnvironment() ? 15000 : 30000,
-    });
-    
-    if (response.status === 200 && response.data && response.data.title) {
-      console.log('Found title from oEmbed API:', response.data.title);
-      return { title: response.data.title };
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('oEmbed API获取视频信息失败:', error);
-    return null;
   }
 }
 
@@ -156,33 +105,12 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  try {
-    // 记录环境信息
-    console.log('Environment:', {
-      isVercel: isVercelEnvironment(),
-      vercelEnv: process.env.VERCEL_ENV,
-      vercelRegion: process.env.VERCEL_REGION,
-      nodeEnv: process.env.NODE_ENV
-    });
+  // 删除模拟数据
+  if (videoId === 'oc6RV5c1yd0') {
+    console.log('不再使用模拟数据，尝试获取真实视频信息');
+  }
 
-    // 如果是Vercel环境，先尝试使用oEmbed API
-    if (isVercelEnvironment()) {
-      try {
-        console.log('在Vercel环境中，尝试使用oEmbed API获取视频信息');
-        const videoInfo = await getVideoInfoFromOEmbed(videoId);
-        if (videoInfo && videoInfo.title) {
-          return NextResponse.json({
-            success: true,
-            title: videoInfo.title,
-            videoId,
-            source: 'oembed_api'
-          });
-        }
-      } catch (directError) {
-        console.error('Vercel环境oEmbed API获取失败:', directError);
-      }
-    }
-    
+  try {
     // 配置 axios 请求
     const axiosConfig = {
       headers: {
@@ -206,7 +134,7 @@ export async function GET(request: NextRequest) {
         'Sec-Ch-Ua-Full-Version': '"120.0.6099.130"',
         'DNT': '1',
       },
-      timeout: isVercelEnvironment() ? 25000 : 60000, // 根据环境调整超时时间
+      timeout: 60000, // 增加超时时间到60秒
       maxRedirects: 5,
       decompress: true,
       validateStatus: function (status: number) {
@@ -217,7 +145,8 @@ export async function GET(request: NextRequest) {
     };
 
     try {
-      const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+      const youtubeBaseUrl = getYouTubeProxyUrl();
+      const videoUrl = `${youtubeBaseUrl}/watch?v=${videoId}`;
       console.log('Fetching video info:', videoUrl);
       
       // 使用代理尝试获取数据
@@ -230,6 +159,7 @@ export async function GET(request: NextRequest) {
 
       const html = response.data;
       let title = '';
+      let source = 'html_parsing';
 
       // 1. 尝试从 JSON 数据中提取标题
       const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
@@ -238,6 +168,7 @@ export async function GET(request: NextRequest) {
           const config = JSON.parse(jsonMatch[1]);
           title = config.videoDetails?.title;
           console.log('Found title from JSON:', title);
+          source = 'json_data';
         } catch (e) {
           console.error('解析 JSON 数据失败:', e);
         }
@@ -249,6 +180,7 @@ export async function GET(request: NextRequest) {
         if (metaTitleMatch) {
           title = metaTitleMatch[1];
           console.log('Found title from meta tag:', title);
+          source = 'meta_tag';
         }
       }
 
@@ -258,6 +190,7 @@ export async function GET(request: NextRequest) {
         if (titleMatch) {
           title = titleMatch[1].replace(' - YouTube', '');
           console.log('Found title from document title:', title);
+          source = 'document_title';
         }
       }
 
@@ -265,13 +198,14 @@ export async function GET(request: NextRequest) {
       if (!title) {
         title = `Video_${videoId}`;
         console.log('Using default title');
+        source = 'default';
       }
 
       return NextResponse.json({
         success: true,
         title,
         videoId,
-        source: 'html_parsing'
+        source
       });
     } catch (error) {
       console.error('获取视频信息失败:', error);
@@ -285,7 +219,7 @@ export async function GET(request: NextRequest) {
             success: true,
             title: videoInfo.title,
             videoId,
-            source: 'alternative_api'
+            source: 'oembed_api'
           });
         }
       } catch (altError) {
@@ -308,48 +242,40 @@ export async function GET(request: NextRequest) {
     const errorMessage = error instanceof Error ? error.message : '未知错误';
     console.error('详细错误信息:', errorMessage);
     return NextResponse.json({
-      success: true, // 即使出错也返回成功，确保客户端能获取标题
+      success: false,
       title: `Video_${videoId}`,
       videoId,
-      source: 'error_fallback'
-    });
+      error: errorMessage,
+      source: 'error'
+    }, { status: 500 });
   }
 }
 
 // 备用方法：使用YouTube API获取视频信息
 async function getVideoInfoFromAlternativeSource(videoId: string): Promise<{ title: string } | null> {
   try {
-    // 首先尝试使用YouTube Data API（如果您有API密钥）
-    // 注意：这需要一个YouTube Data API密钥
+    // 尝试使用YouTube oEmbed API获取视频信息
+    const youtubeBaseUrl = getYouTubeProxyUrl();
+    const oembedUrl = `${youtubeBaseUrl}/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
     
-    // 后备：使用内部JSON API
-    const infoUrl = `https://www.youtube.com/get_video_info?video_id=${videoId}&html5=1`;
+    console.log('尝试使用oEmbed API获取视频信息:', oembedUrl);
     
-    const response = await axios.get(infoUrl, {
+    const response = await axios.get(oembedUrl, {
       headers: {
         'User-Agent': USER_AGENT,
-        'Accept': 'application/json, text/plain, */*',
+        'Accept': 'application/json',
         'Origin': 'https://www.youtube.com',
         'Referer': `https://www.youtube.com/watch?v=${videoId}`,
       },
-      timeout: isVercelEnvironment() ? 15000 : 30000,
+      timeout: 30000,
     });
     
-    if (response.status === 200 && response.data) {
-      const data = new URLSearchParams(response.data);
-      try {
-        const playerResponse = JSON.parse(data.get('player_response') || '{}');
-        if (playerResponse.videoDetails && playerResponse.videoDetails.title) {
-          console.log('Found title from get_video_info:', playerResponse.videoDetails.title);
-          return { title: playerResponse.videoDetails.title };
-        }
-      } catch (e) {
-        console.error('解析player_response失败:', e);
-      }
+    if (response.status === 200 && response.data && response.data.title) {
+      console.log('Found title from oEmbed API:', response.data.title);
+      return { title: response.data.title };
     }
     
-    // 最后尝试oEmbed API
-    return getVideoInfoFromOEmbed(videoId);
+    return null;
   } catch (error) {
     console.error('备用方法获取视频信息失败:', error);
     return null;

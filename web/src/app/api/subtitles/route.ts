@@ -11,16 +11,24 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 // 使用公共代理服务
 const PUBLIC_PROXIES = [
+  'https://cors-anywhere.herokuapp.com/',
   'https://api.allorigins.win/raw?url=',
-  'https://corsproxy.io/?',
-  'https://cors-anywhere.herokuapp.com/'
+  'https://corsproxy.io/?'
 ];
 
-// 检测是否在Vercel环境中
-function isVercelEnvironment(): boolean {
-  return process.env.VERCEL === '1' || 
-         process.env.VERCEL_ENV === 'production' || 
-         process.env.VERCEL_REGION !== undefined;
+// 获取环境中的YouTube代理URL前缀
+function getYouTubeProxyUrl() {
+  // 检查是否在Vercel环境中
+  const isVercel = process.env.VERCEL === '1';
+  
+  // 获取当前域名，用于构建代理URL
+  const host = process.env.VERCEL_URL || 'localhost:3000';
+  const protocol = isVercel ? 'https' : 'http';
+  
+  // 使用我们在next.config.mjs中配置的代理
+  return isVercel 
+    ? `${protocol}://${host}/youtube-proxy` 
+    : 'https://www.youtube.com';
 }
 
 async function sleep(ms: number) {
@@ -30,13 +38,6 @@ async function sleep(ms: number) {
 async function fetchWithRetry(url: string, config: any, retries = MAX_RETRIES): Promise<any> {
   try {
     console.log(`Fetching URL: ${url}`);
-    
-    // 在Vercel环境中使用较短的超时
-    if (isVercelEnvironment() && config.timeout > 25000) {
-      config.timeout = 25000;
-      console.log('Running in Vercel environment, reducing timeout to 25s');
-    }
-    
     const response = await axios(url, config);
     console.log(`Response status: ${response.status}`);
     return response;
@@ -61,123 +62,37 @@ async function fetchWithRetry(url: string, config: any, retries = MAX_RETRIES): 
 
 // 尝试使用不同的代理获取数据
 async function fetchWithProxies(url: string, config: any): Promise<any> {
-  // 检查是否在Vercel环境
-  const isVercel = isVercelEnvironment();
-  console.log(`Running in Vercel environment: ${isVercel}`);
-  
-  // 在Vercel环境中优先尝试直接获取YouTube subtitles API
-  if (isVercel && url.includes('youtube.com/watch')) {
-    const videoId = new URL(url).searchParams.get('v');
-    if (videoId) {
-      try {
-        console.log('Vercel环境: 尝试使用字幕API直接获取...');
-        const subtitleData = await getSubtitlesDirectly(videoId, config);
-        if (subtitleData) {
-          return { 
-            status: 200, 
-            data: subtitleData 
-          };
-        }
-      } catch (apiError: any) {
-        console.error('直接获取字幕失败:', apiError.message);
-      }
-    }
-  }
-  
   // 首先尝试直接请求
   try {
     return await fetchWithRetry(url, config);
   } catch (directError: any) {
     console.error('直接请求失败，尝试使用代理:', directError.message);
     
-    // 如果直接请求失败，尝试使用代理
-    for (const proxy of PUBLIC_PROXIES) {
-      try {
-        console.log(`尝试使用代理: ${proxy}`);
-        const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
-        return await fetchWithRetry(proxyUrl, config);
-      } catch (proxyError: any) {
-        console.error(`代理 ${proxy} 请求失败:`, proxyError.message);
-        // 继续尝试下一个代理
-      }
-    }
-    
-    // 所有方法都失败，尝试使用内联数据
-    if (url.includes('youtube.com/watch')) {
-      const videoId = new URL(url).searchParams.get('v');
-      if (videoId) {
-        // 这里返回一个简单的内联字幕
-        console.log('所有方法都失败，返回内联字幕数据');
-        return {
-          status: 200,
-          data: generateInlineSubtitles(videoId)
-        };
+    // 如果直接请求失败，尝试使用内部代理
+    try {
+      // 使用我们配置的代理路径
+      const internalProxyUrl = url.replace('https://www.youtube.com', getYouTubeProxyUrl());
+      console.log(`尝试使用内部代理: ${internalProxyUrl}`);
+      return await fetchWithRetry(internalProxyUrl, config);
+    } catch (internalProxyError: any) {
+      console.error('内部代理请求失败:', internalProxyError.message);
+      
+      // 如果内部代理失败，尝试使用外部公共代理
+      for (const proxy of PUBLIC_PROXIES) {
+        try {
+          console.log(`尝试使用公共代理: ${proxy}`);
+          const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
+          return await fetchWithRetry(proxyUrl, config);
+        } catch (proxyError: any) {
+          console.error(`代理 ${proxy} 请求失败:`, proxyError.message);
+          // 继续尝试下一个代理
+        }
       }
     }
     
     // 如果所有代理都失败，抛出原始错误
     throw directError;
   }
-}
-
-// 直接使用YouTube API获取字幕
-async function getSubtitlesDirectly(videoId: string, originalConfig: any): Promise<string | null> {
-  // 首先，获取字幕列表
-  const apiUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&type=list`;
-  
-  const response = await axios.get(apiUrl, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Accept': 'application/json, text/plain, */*',
-      'Origin': 'https://www.youtube.com',
-      'Referer': `https://www.youtube.com/watch?v=${videoId}`,
-    },
-    timeout: 15000,
-  });
-  
-  if (response.status === 200 && response.data) {
-    try {
-      // 解析XML响应
-      const data = response.data;
-      console.log('字幕列表数据类型:', typeof data);
-      
-      // 寻找英文字幕
-      const match = data.match(/lang_code="en"[^>]*?id="([^"]+)"/);
-      if (match) {
-        const captionId = match[1];
-        console.log('找到英文字幕ID:', captionId);
-        
-        // 获取字幕内容
-        const subtitleUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv1&name=${encodeURIComponent(captionId)}`;
-        const subtitleResponse = await axios.get(subtitleUrl, {
-          headers: {
-            'User-Agent': USER_AGENT,
-            'Accept': 'application/xml, text/plain, */*',
-            'Origin': 'https://www.youtube.com',
-            'Referer': `https://www.youtube.com/watch?v=${videoId}`,
-          },
-          timeout: 15000,
-        });
-        
-        if (subtitleResponse.status === 200) {
-          return subtitleResponse.data;
-        }
-      }
-    } catch (e) {
-      console.error('解析字幕列表失败:', e);
-    }
-  }
-  
-  return null;
-}
-
-// 生成内联字幕作为后备
-function generateInlineSubtitles(videoId: string): string {
-  return `<?xml version="1.0" encoding="utf-8" ?><transcript>
-  <text start="0" dur="5">This is a placeholder subtitle for video ID: ${videoId}</text>
-  <text start="5" dur="5">The actual subtitles could not be retrieved.</text>
-  <text start="10" dur="5">Please try again later or with a different video.</text>
-</transcript>`;
 }
 
 export async function GET(request: NextRequest) {
@@ -199,31 +114,12 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // 删除模拟数据
+  if (videoId === 'oc6RV5c1yd0') {
+    console.log('不再使用模拟数据，尝试获取真实字幕数据');
+  }
+
   try {
-    // 记录环境信息
-    console.log('Environment:', {
-      isVercel: isVercelEnvironment(),
-      vercelEnv: process.env.VERCEL_ENV,
-      vercelRegion: process.env.VERCEL_REGION,
-      nodeEnv: process.env.NODE_ENV
-    });
-    
-    // 如果是Vercel环境，直接尝试获取字幕
-    if (isVercelEnvironment()) {
-      try {
-        console.log('在Vercel环境中，尝试使用直接方法获取字幕');
-        const subtitleData = await getSubtitlesFromAlternativeSource(videoId, subtitleType);
-        if (subtitleData) {
-          return NextResponse.json({ 
-            success: true, 
-            subtitles: subtitleData 
-          });
-        }
-      } catch (directError) {
-        console.error('Vercel环境直接获取字幕失败:', directError);
-      }
-    }
-    
     // 配置 axios 请求
     const axiosConfig = {
       headers: {
@@ -246,7 +142,7 @@ export async function GET(request: NextRequest) {
         'Sec-Ch-Ua-Full-Version': '"120.0.6099.130"',
         'DNT': '1',
       },
-      timeout: isVercelEnvironment() ? 25000 : 60000, // 根据环境调整超时时间
+      timeout: 60000, // 增加超时时间到60秒
       maxRedirects: 5,
       decompress: true,
       validateStatus: function (status: number) {
@@ -257,7 +153,8 @@ export async function GET(request: NextRequest) {
     };
 
     // 获取视频页面
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const youtubeBaseUrl = getYouTubeProxyUrl();
+    const videoUrl = `${youtubeBaseUrl}/watch?v=${videoId}`;
     console.log('Fetching video page:', videoUrl);
     
     try {
@@ -272,7 +169,7 @@ export async function GET(request: NextRequest) {
       const html = response.data;
       
       // 提取字幕数据
-      const subtitleData = await extractSubtitleData(html, subtitleType, axiosConfig);
+      const subtitleData = await extractSubtitleData(html, subtitleType, axiosConfig, youtubeBaseUrl);
       if (!subtitleData) {
         console.error('无法获取字幕数据');
         throw new Error('无法获取字幕数据');
@@ -301,27 +198,23 @@ export async function GET(request: NextRequest) {
       
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       console.error('详细错误信息:', errorMessage);
-      
-      // 作为最后的后备，返回一个简单的内联字幕
-      console.log('所有方法都失败，返回内联字幕数据');
       return NextResponse.json({ 
-        success: true,  // 返回成功，但使用内联数据
-        subtitles: generateInlineSubtitles(videoId),
-        isInlineData: true
-      });
+        success: false, 
+        error: errorMessage,
+        videoId,
+        subtitleType,
+      }, { status: 500 });
     }
   } catch (error) {
     console.error('获取字幕失败:', error);
     const errorMessage = error instanceof Error ? error.message : '未知错误';
     console.error('详细错误信息:', errorMessage);
-    
-    // 作为最后的后备，返回一个简单的内联字幕
-    console.log('所有方法都失败，返回内联字幕数据');
     return NextResponse.json({ 
-      success: true,  // 返回成功，但使用内联数据
-      subtitles: generateInlineSubtitles(videoId),
-      isInlineData: true
-    });
+      success: false, 
+      error: errorMessage,
+      videoId,
+      subtitleType,
+    }, { status: 500 });
   }
 }
 
@@ -329,7 +222,10 @@ export async function GET(request: NextRequest) {
 async function getSubtitlesFromAlternativeSource(videoId: string, subtitleType: 'auto' | 'manual'): Promise<string | null> {
   try {
     // 使用YouTube API获取字幕列表
-    const apiUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&type=${subtitleType === 'auto' ? 'asr' : 'track'}&lang=en&fmt=srv1`;
+    const youtubeBaseUrl = getYouTubeProxyUrl();
+    const apiUrl = `${youtubeBaseUrl}/api/timedtext?v=${videoId}&type=${subtitleType === 'auto' ? 'asr' : 'track'}&lang=en&fmt=srv1`;
+    
+    console.log('尝试使用备用API获取字幕:', apiUrl);
     
     const response = await axios.get(apiUrl, {
       headers: {
@@ -338,28 +234,12 @@ async function getSubtitlesFromAlternativeSource(videoId: string, subtitleType: 
         'Origin': 'https://www.youtube.com',
         'Referer': `https://www.youtube.com/watch?v=${videoId}`,
       },
-      timeout: isVercelEnvironment() ? 15000 : 30000,
+      timeout: 30000,
     });
     
     if (response.status === 200 && response.data) {
       // 将API返回的数据转换为我们需要的XML格式
       return convertToTranscriptXml(response.data);
-    }
-    
-    // 尝试备用API端点
-    const altApiUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv1`;
-    const altResponse = await axios.get(altApiUrl, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'application/json, text/plain, */*',
-        'Origin': 'https://www.youtube.com',
-        'Referer': `https://www.youtube.com/watch?v=${videoId}`,
-      },
-      timeout: isVercelEnvironment() ? 15000 : 30000,
-    });
-    
-    if (altResponse.status === 200 && altResponse.data) {
-      return convertToTranscriptXml(altResponse.data);
     }
     
     return null;
@@ -429,12 +309,14 @@ function convertToTranscriptXml(data: any): string {
  * @param html - The HTML of the YouTube page
  * @param subtitleType - The subtitle type ('auto' or 'manual')
  * @param axiosConfig - The axios config for making requests
+ * @param youtubeBaseUrl - The base URL to use for YouTube requests (may be a proxy)
  * @returns A promise that resolves to the subtitle data
  */
 async function extractSubtitleData(
   html: string, 
   subtitleType: 'auto' | 'manual',
-  axiosConfig: any
+  axiosConfig: any,
+  youtubeBaseUrl: string = 'https://www.youtube.com'
 ): Promise<string | null> {
   try {
     // 提取 ytInitialPlayerResponse
@@ -445,7 +327,7 @@ async function extractSubtitleData(
       if (!altMatch) {
         throw new Error('无法找到视频配置信息');
       }
-      return extractFromCaptionsData(altMatch[1], subtitleType, axiosConfig);
+      return extractFromCaptionsData(altMatch[1], subtitleType, axiosConfig, youtubeBaseUrl);
     }
 
     let config;
@@ -459,7 +341,7 @@ async function extractSubtitleData(
       if (!altMatch) {
         throw new Error('解析视频配置失败');
       }
-      return extractFromCaptionsData(altMatch[1], subtitleType, axiosConfig);
+      return extractFromCaptionsData(altMatch[1], subtitleType, axiosConfig, youtubeBaseUrl);
     }
 
     if (!config.captions?.playerCaptionsTracklistRenderer?.captionTracks) {
@@ -500,10 +382,17 @@ async function extractSubtitleData(
         name: anyTrack.name?.simpleText || 'Unknown'
       });
       
-      console.log('获取字幕URL:', anyTrack.baseUrl);
+      // 可能需要修改URL，如果使用了代理
+      let trackUrl = anyTrack.baseUrl;
+      if (youtubeBaseUrl !== 'https://www.youtube.com') {
+        // 如果使用代理，需要替换URL中的域名
+        trackUrl = trackUrl.replace('https://www.youtube.com', youtubeBaseUrl);
+      }
+      
+      console.log('获取字幕URL:', trackUrl);
       
       // 获取字幕内容
-      const subtitleResponse = await fetchWithProxies(anyTrack.baseUrl, {
+      const subtitleResponse = await fetchWithProxies(trackUrl, {
         ...axiosConfig,
         headers: {
           ...axiosConfig.headers,
@@ -519,10 +408,17 @@ async function extractSubtitleData(
       return subtitleResponse.data;
     }
 
-    console.log('获取字幕URL:', englishTrack.baseUrl);
+    // 可能需要修改URL，如果使用了代理
+    let trackUrl = englishTrack.baseUrl;
+    if (youtubeBaseUrl !== 'https://www.youtube.com') {
+      // 如果使用代理，需要替换URL中的域名
+      trackUrl = trackUrl.replace('https://www.youtube.com', youtubeBaseUrl);
+    }
+    
+    console.log('获取字幕URL:', trackUrl);
 
     // 获取字幕内容
-    const subtitleResponse = await fetchWithProxies(englishTrack.baseUrl, {
+    const subtitleResponse = await fetchWithProxies(trackUrl, {
       ...axiosConfig,
       headers: {
         ...axiosConfig.headers,
@@ -545,7 +441,8 @@ async function extractSubtitleData(
 async function extractFromCaptionsData(
   captionsJson: string,
   subtitleType: 'auto' | 'manual',
-  axiosConfig: any
+  axiosConfig: any,
+  youtubeBaseUrl: string = 'https://www.youtube.com'
 ): Promise<string | null> {
   try {
     const captions = JSON.parse(captionsJson);
@@ -584,10 +481,17 @@ async function extractFromCaptionsData(
         name: anyTrack.name?.simpleText || 'Unknown'
       });
       
-      console.log('获取字幕URL:', anyTrack.baseUrl);
+      // 可能需要修改URL，如果使用了代理
+      let trackUrl = anyTrack.baseUrl;
+      if (youtubeBaseUrl !== 'https://www.youtube.com') {
+        // 如果使用代理，需要替换URL中的域名
+        trackUrl = trackUrl.replace('https://www.youtube.com', youtubeBaseUrl);
+      }
+      
+      console.log('获取字幕URL:', trackUrl);
       
       // 获取字幕内容
-      const subtitleResponse = await fetchWithProxies(anyTrack.baseUrl, {
+      const subtitleResponse = await fetchWithProxies(trackUrl, {
         ...axiosConfig,
         headers: {
           ...axiosConfig.headers,
@@ -603,7 +507,16 @@ async function extractFromCaptionsData(
       return subtitleResponse.data;
     }
 
-    const subtitleResponse = await fetchWithProxies(englishTrack.baseUrl, {
+    // 可能需要修改URL，如果使用了代理
+    let trackUrl = englishTrack.baseUrl;
+    if (youtubeBaseUrl !== 'https://www.youtube.com') {
+      // 如果使用代理，需要替换URL中的域名
+      trackUrl = trackUrl.replace('https://www.youtube.com', youtubeBaseUrl);
+    }
+    
+    console.log('获取字幕URL:', trackUrl);
+
+    const subtitleResponse = await fetchWithProxies(trackUrl, {
       ...axiosConfig,
       headers: {
         ...axiosConfig.headers,
