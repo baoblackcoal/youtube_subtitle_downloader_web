@@ -2,66 +2,113 @@
 
 import { useState, FormEvent, useEffect } from 'react';
 import { FaDownload, FaPaste } from 'react-icons/fa';
+import { YouTubeApiService } from '../services/youtubeApiService';
 import { downloadSubtitles } from '@/services/subtitleService';
+import { Input } from './ui/input';
+import { Button } from './ui/button';
+import { SubtitleOption } from './subtitleOption';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Download } from 'lucide-react';
 
 interface SubtitleFormProps {
-  isLoading: boolean;
-  setIsLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   setSuccess: (success: string | null) => void;
 }
 
+export interface SubtitleResponse {
+  url?: string;
+  content?: string;
+  fileName?: string;
+  error?: string;
+}
+
 export default function SubtitleForm({ 
-  isLoading, 
-  setIsLoading, 
-  setError, 
-  setSuccess 
+  setError,
+  setSuccess
 }: SubtitleFormProps) {
-  const [videoUrl, setVideoUrl] = useState('https://www.youtube.com/watch?v=oc6RV5c1yd0');
+  const [videoUrl, setVideoUrl] = useState('');
   const [subtitleType, setSubtitleType] = useState<'auto' | 'manual'>('auto');
-  const [format, setFormat] = useState<'vtt' | 'srt' | 'txt'>('txt');
+  const [format, setFormat] = useState<'vtt' | 'srt' | 'txt'>('srt');
+  const [isLoading, setIsLoading] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const maxRetries = 2;
+  const [debugInfo, setDebugInfo] = useState('');
+  const [showDebug, setShowDebug] = useState(false);
 
   // 记录环境信息，帮助调试
   useEffect(() => {
-    console.log('Environment:', {
-      isDevelopment: process.env.NODE_ENV === 'development',
-      isProduction: process.env.NODE_ENV === 'production',
-      baseUrl: window.location.origin,
-      userAgent: navigator.userAgent
+    console.log('环境信息:', {
+      userAgent: navigator.userAgent,
+      isSecureContext: window.isSecureContext,
+      protocol: window.location.protocol,
+      host: window.location.host
     });
   }, []);
 
+  const addDebugInfo = (message: string) => {
+    console.log('[Debug]', message);
+    setDebugInfo(prev => `${prev}\n${new Date().toISOString()}: ${message}`);
+  };
+
+  const logError = (error: any) => {
+    console.error('[SubtitleForm Error]', error);
+    if (error instanceof Error) {
+      setError(error.message);
+      addDebugInfo(`错误: ${error.message}\n${error.stack || ''}`);
+    } else if (typeof error === 'string') {
+      setError(error);
+      addDebugInfo(`错误字符串: ${error}`);
+    } else if (error && typeof error === 'object') {
+      const errorMsg = error.message || JSON.stringify(error);
+      setError(errorMsg);
+      addDebugInfo(`错误对象: ${JSON.stringify(error, null, 2)}`);
+    } else {
+      setError('下载字幕时出现未知错误');
+      addDebugInfo(`未知错误类型: ${error}`);
+    }
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    
-    if (!videoUrl.trim()) {
-      setError('请输入 YouTube 视频链接');
-      return;
-    }
-    
+    setIsLoading(true);
     setError(null);
     setSuccess(null);
-    setIsLoading(true);
-    
+    setRetryCount(0);
+    setDebugInfo('');
+
     try {
+      // 检查是否输入了视频URL
+      if (!videoUrl.trim()) {
+        throw new Error('请输入YouTube视频链接');
+      }
+
+      addDebugInfo(`开始处理视频: ${videoUrl}, 字幕类型: ${subtitleType}, 格式: ${format}`);
+
+      // 使用原有的下载功能
       console.log('Submitting form with:', { videoUrl, subtitleType, format });
       console.time('downloadSubtitles');
-      
+       
       const result = await downloadSubtitles(videoUrl, subtitleType, format);
-      
+       
       console.timeEnd('downloadSubtitles');
       console.log('Download result:', result);
-      
+      addDebugInfo(`下载结果: ${JSON.stringify(result, null, 2)}`);
+        
       if (result && result.success) {
         setSuccess('字幕下载成功！');
         // 重置重试计数
         setRetryCount(0);
+        addDebugInfo('下载成功');
       } else if (result && !result.success) {
         throw new Error(result.error || '下载字幕失败');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('下载字幕失败:', error);
       
       // 提供更友好的错误信息
@@ -81,7 +128,7 @@ export default function SubtitleForm({
           if (retryCount < maxRetries) {
             setRetryCount(prev => prev + 1);
             setError(`请求超时，正在自动重试 (${retryCount + 1}/${maxRetries})...`);
-            
+          
             // 延迟2秒后重试
             setTimeout(() => {
               handleSubmit(e);
@@ -97,6 +144,7 @@ export default function SubtitleForm({
       }
       
       setError(errorMessage);
+      addDebugInfo(`最终错误信息: ${errorMessage}`);
       // 重置重试计数
       setRetryCount(0);
     } finally {
@@ -108,9 +156,13 @@ export default function SubtitleForm({
     try {
       const text = await navigator.clipboard.readText();
       setVideoUrl(text);
-    } catch (error) {
-      setError('无法访问剪贴板');
+    } catch (err) {
+      console.error('无法访问剪贴板:', err);
     }
+  };
+
+  const toggleDebug = () => {
+    setShowDebug(!showDebug);
   };
 
   return (
@@ -231,6 +283,23 @@ export default function SubtitleForm({
           )}
         </button>
       </div>
+
+      <div className="text-right">
+        <button
+          type="button"
+          onClick={toggleDebug}
+          className="text-xs text-gray-500 underline"
+        >
+          {showDebug ? '隐藏调试信息' : '显示调试信息'}
+        </button>
+      </div>
+
+      {showDebug && debugInfo && (
+        <div className="bg-gray-100 border border-gray-200 text-gray-800 rounded p-3 text-xs font-mono whitespace-pre-wrap overflow-auto max-h-[300px]">
+          <p className="font-semibold">调试信息:</p>
+          {debugInfo}
+        </div>
+      )}
     </form>
   );
 } 
