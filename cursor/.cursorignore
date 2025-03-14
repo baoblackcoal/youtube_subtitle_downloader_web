@@ -1,0 +1,17 @@
+node_modules
+dist
+build
+.env
+.gitignore
+.cursorignore
+*.zip
+
+pycache
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+
+/test/__pycache__
+/test/.pytest_cache
