@@ -34,10 +34,28 @@ export default function SubtitleForm({
     setIsLoading(true);
     
     try {
+      console.log('Submitting form with:', { videoUrl, subtitleType, format });
       await downloadSubtitles(videoUrl, subtitleType, format);
       setSuccess('字幕下载成功！');
     } catch (error) {
-      setError(error instanceof Error ? error.message : '下载字幕时出错');
+      console.error('下载字幕失败:', error);
+      
+      // 提供更友好的错误信息
+      let errorMessage = '下载字幕时出错';
+      if (error instanceof Error) {
+        if (error.message.includes('该视频没有可用的字幕') || 
+            error.message.includes('找不到所选类型的英文字幕')) {
+          errorMessage = `该视频没有${subtitleType === 'auto' ? '自动生成的' : ''}英文字幕，请尝试其他选项`;
+        } else if (error.message.includes('无效的 YouTube 视频链接')) {
+          errorMessage = '请输入有效的 YouTube 视频链接';
+        } else if (error.message.includes('无法获取视频 ID')) {
+          errorMessage = '无法从链接中获取视频 ID，请检查链接格式';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }

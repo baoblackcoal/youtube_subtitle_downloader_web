@@ -24,10 +24,20 @@ export class YouTubeApiService {
       console.log('Getting video info for:', videoId);
       
       // 使用我们的API端点而不是直接请求YouTube
-      const response = await axios.get(`${this.apiBaseUrl}/api/video-info?videoId=${videoId}`);
+      const response = await axios.get(`${this.apiBaseUrl}/api/video-info?videoId=${videoId}`, {
+        timeout: 10000, // 设置10秒超时
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        }
+      });
+      
+      console.log('Video info response:', response.data);
       
       // 检查响应状态
       if (!response.data.success) {
+        console.error('Video info API error:', response.data.error);
         throw new Error(response.data.error || '获取视频信息失败');
       }
       
@@ -38,6 +48,14 @@ export class YouTubeApiService {
       };
     } catch (error) {
       console.error('获取视频信息失败:', error);
+      // 如果是网络错误，提供更具体的错误信息
+      if (axios.isAxiosError(error)) {
+        console.error('Axios error details:', {
+          status: error.response?.status,
+          data: error.response?.data,
+          message: error.message
+        });
+      }
       return { 
         success: false, 
         error: error instanceof Error ? error.message : '未知错误',
@@ -59,11 +77,22 @@ export class YouTubeApiService {
       
       // 使用我们的API端点而不是直接请求YouTube
       const response = await axios.get(
-        `${this.apiBaseUrl}/api/subtitles?videoId=${videoId}&subtitleType=${subtitleType}`
+        `${this.apiBaseUrl}/api/subtitles?videoId=${videoId}&subtitleType=${subtitleType}`,
+        {
+          timeout: 30000, // 增加超时时间到30秒
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+          }
+        }
       );
+      
+      console.log('Subtitles response status:', response.status);
       
       // 检查响应状态
       if (!response.data.success) {
+        console.error('Subtitles API error:', response.data.error);
         throw new Error(response.data.error || '获取字幕失败');
       }
       
@@ -73,6 +102,22 @@ export class YouTubeApiService {
       };
     } catch (error) {
       console.error('获取字幕失败:', error);
+      // 如果是网络错误，提供更具体的错误信息
+      if (axios.isAxiosError(error)) {
+        console.error('Axios error details:', {
+          status: error.response?.status,
+          data: error.response?.data,
+          message: error.message
+        });
+        
+        // 如果服务器返回了错误信息，使用服务器的错误信息
+        if (error.response?.data?.error) {
+          return { 
+            success: false, 
+            error: error.response.data.error
+          };
+        }
+      }
       return { 
         success: false, 
         error: error instanceof Error ? error.message : '未知错误' 
