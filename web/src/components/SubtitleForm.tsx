@@ -50,6 +50,10 @@ export default function SubtitleForm({
           errorMessage = '请输入有效的 YouTube 视频链接';
         } else if (error.message.includes('无法获取视频 ID')) {
           errorMessage = '无法从链接中获取视频 ID，请检查链接格式';
+        } else if (error.message.includes('timeout') || error.message.includes('超时')) {
+          errorMessage = '请求超时，请稍后再试';
+        } else if (error.message.includes('network') || error.message.includes('网络')) {
+          errorMessage = '网络错误，请检查您的网络连接';
         } else {
           errorMessage = error.message;
         }

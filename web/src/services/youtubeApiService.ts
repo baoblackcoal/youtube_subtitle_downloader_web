@@ -25,7 +25,7 @@ export class YouTubeApiService {
       
       // 使用我们的API端点而不是直接请求YouTube
       const response = await axios.get(`${this.apiBaseUrl}/api/video-info?videoId=${videoId}`, {
-        timeout: 10000, // 设置10秒超时
+        timeout: 60000, // 设置60秒超时
         headers: {
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache',
@@ -79,7 +79,7 @@ export class YouTubeApiService {
       const response = await axios.get(
         `${this.apiBaseUrl}/api/subtitles?videoId=${videoId}&subtitleType=${subtitleType}`,
         {
-          timeout: 30000, // 增加超时时间到30秒
+          timeout: 60000, // 增加超时时间到60秒
           headers: {
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache',

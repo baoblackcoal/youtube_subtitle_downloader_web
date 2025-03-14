@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { Cookie } from 'tough-cookie';
 
 // 更新 Cookie 字符串
 const COOKIE_STRING = 'CONSENT=YES+cb; GPS=1; VISITOR_INFO1_LIVE=true; YSC=true; PREF=tz=Asia.Tokyo';
@@ -65,14 +63,16 @@ export async function GET(request: NextRequest) {
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Expires': '0',
         'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
         'Sec-Ch-Ua-Full-Version': '"120.0.6099.130"',
         'DNT': '1',
       },
-      timeout: 30000, // 增加超时时间到30秒
+      timeout: 60000, // 增加超时时间到60秒
       maxRedirects: 5,
       decompress: true,
       validateStatus: function (status: number) {
@@ -83,20 +83,6 @@ export async function GET(request: NextRequest) {
     };
 
     try {
-      // 在Vercel环境中，可能无法直接访问YouTube，返回模拟数据用于测试
-      if (process.env.VERCEL) {
-        console.log('Running in Vercel environment, returning mock data');
-        
-        // 检查是否是示例视频ID
-        if (videoId === 'oc6RV5c1yd0') {
-          return NextResponse.json({
-            success: true,
-            title: 'YouTube Subtitle Downloader Demo',
-            videoId
-          });
-        }
-      }
-      
       const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
       console.log('Fetching video info:', videoUrl);
       const response = await fetchWithRetry(videoUrl, axiosConfig);

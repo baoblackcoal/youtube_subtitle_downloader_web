@@ -74,14 +74,15 @@ export async function GET(request: NextRequest) {
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
         'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
         'Sec-Ch-Ua-Full-Version': '"120.0.6099.130"',
         'DNT': '1',
       },
-      timeout: 30000,
+      timeout: 60000, // 增加超时时间到60秒
       maxRedirects: 5,
       decompress: true,
       validateStatus: function (status: number) {
@@ -118,19 +119,6 @@ export async function GET(request: NextRequest) {
       });
     } catch (error) {
       console.error('获取字幕失败:', error);
-      
-      // 在Vercel环境中，可能无法直接访问YouTube，返回模拟数据用于测试
-      if (process.env.VERCEL) {
-        console.log('Running in Vercel environment, returning mock data');
-        
-        // 检查是否是示例视频ID
-        if (videoId === 'oc6RV5c1yd0') {
-          return NextResponse.json({ 
-            success: true, 
-            subtitles: getMockSubtitles() 
-          });
-        }
-      }
       
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       console.error('详细错误信息:', errorMessage);
@@ -182,6 +170,7 @@ async function extractSubtitleData(
     let config;
     try {
       config = JSON.parse(match[1]);
+      console.log('Successfully parsed video config');
     } catch (e) {
       console.error('解析视频配置失败:', e);
       // 尝试其他方式提取配置
@@ -193,11 +182,22 @@ async function extractSubtitleData(
     }
 
     if (!config.captions?.playerCaptionsTracklistRenderer?.captionTracks) {
+      console.error('No caption tracks found in config');
       throw new Error('该视频没有可用的字幕');
     }
 
     const captionTracks = config.captions.playerCaptionsTracklistRenderer.captionTracks;
     console.log('找到字幕轨道:', captionTracks.length);
+    
+    // 记录所有可用的字幕轨道，以便调试
+    captionTracks.forEach((track: any, index: number) => {
+      console.log(`Track ${index}:`, {
+        languageCode: track.languageCode,
+        kind: track.kind,
+        name: track.name?.simpleText || 'Unknown',
+        isAuto: track.kind === 'asr'
+      });
+    });
     
     // 查找英文字幕
     const englishTrack = captionTracks.find((track: any) => {
@@ -207,7 +207,35 @@ async function extractSubtitleData(
     });
 
     if (!englishTrack) {
-      throw new Error('找不到所选类型的英文字幕');
+      // 如果找不到英文字幕，尝试使用任何可用的字幕
+      console.log('找不到所选类型的英文字幕，尝试使用任何可用的字幕');
+      const anyTrack = captionTracks[0]; // 使用第一个可用的字幕轨道
+      if (!anyTrack) {
+        throw new Error('找不到所选类型的英文字幕，且没有其他可用字幕');
+      }
+      console.log('使用替代字幕轨道:', {
+        languageCode: anyTrack.languageCode,
+        kind: anyTrack.kind,
+        name: anyTrack.name?.simpleText || 'Unknown'
+      });
+      
+      console.log('获取字幕URL:', anyTrack.baseUrl);
+      
+      // 获取字幕内容
+      const subtitleResponse = await fetchWithRetry(anyTrack.baseUrl, {
+        ...axiosConfig,
+        headers: {
+          ...axiosConfig.headers,
+          'Referer': 'https://www.youtube.com/',
+          'Origin': 'https://www.youtube.com',
+        }
+      });
+
+      if (subtitleResponse.status !== 200) {
+        throw new Error(`获取字幕内容失败: ${subtitleResponse.status}`);
+      }
+
+      return subtitleResponse.data;
     }
 
     console.log('获取字幕URL:', englishTrack.baseUrl);
@@ -245,6 +273,17 @@ async function extractFromCaptionsData(
     }
 
     const captionTracks = captions.playerCaptionsTracklistRenderer.captionTracks;
+    
+    // 记录所有可用的字幕轨道，以便调试
+    captionTracks.forEach((track: any, index: number) => {
+      console.log(`Track ${index}:`, {
+        languageCode: track.languageCode,
+        kind: track.kind,
+        name: track.name?.simpleText || 'Unknown',
+        isAuto: track.kind === 'asr'
+      });
+    });
+    
     const englishTrack = captionTracks.find((track: any) => {
       const isAuto = track.kind === 'asr';
       const isEnglish = track.languageCode === 'en';
@@ -252,7 +291,35 @@ async function extractFromCaptionsData(
     });
 
     if (!englishTrack) {
-      throw new Error('找不到所选类型的英文字幕');
+      // 如果找不到英文字幕，尝试使用任何可用的字幕
+      console.log('找不到所选类型的英文字幕，尝试使用任何可用的字幕');
+      const anyTrack = captionTracks[0]; // 使用第一个可用的字幕轨道
+      if (!anyTrack) {
+        throw new Error('找不到所选类型的英文字幕，且没有其他可用字幕');
+      }
+      console.log('使用替代字幕轨道:', {
+        languageCode: anyTrack.languageCode,
+        kind: anyTrack.kind,
+        name: anyTrack.name?.simpleText || 'Unknown'
+      });
+      
+      console.log('获取字幕URL:', anyTrack.baseUrl);
+      
+      // 获取字幕内容
+      const subtitleResponse = await fetchWithRetry(anyTrack.baseUrl, {
+        ...axiosConfig,
+        headers: {
+          ...axiosConfig.headers,
+          'Referer': 'https://www.youtube.com/',
+          'Origin': 'https://www.youtube.com',
+        }
+      });
+
+      if (subtitleResponse.status !== 200) {
+        throw new Error(`获取字幕内容失败: ${subtitleResponse.status}`);
+      }
+
+      return subtitleResponse.data;
     }
 
     const subtitleResponse = await fetchWithRetry(englishTrack.baseUrl, {
@@ -273,24 +340,4 @@ async function extractFromCaptionsData(
     console.error('从备用数据提取字幕失败:', error);
     throw error;
   }
-}
-
-/**
- * 返回模拟的字幕数据，用于在Vercel环境中测试
- */
-function getMockSubtitles(): string {
-  return `<?xml version="1.0" encoding="utf-8" ?><transcript>
-  <text start="0" dur="3.84">Hello and welcome to this video.</text>
-  <text start="3.84" dur="2.88">Today we're going to talk about YouTube subtitles.</text>
-  <text start="6.72" dur="3.2">Subtitles are very important for accessibility.</text>
-  <text start="9.92" dur="4.16">They help people who are deaf or hard of hearing.</text>
-  <text start="14.08" dur="3.52">They also help people who speak different languages.</text>
-  <text start="17.6" dur="2.88">Let's see how to download subtitles.</text>
-  <text start="20.48" dur="3.84">First, you need to find a video with subtitles.</text>
-  <text start="24.32" dur="4.16">Then, you can use our tool to download them.</text>
-  <text start="28.48" dur="3.2">You can choose between different formats.</text>
-  <text start="31.68" dur="2.88">Like VTT, SRT, or plain text.</text>
-  <text start="34.56" dur="3.84">I hope this tool is helpful for you.</text>
-  <text start="38.4" dur="2.88">Thanks for watching!</text>
-</transcript>`;
 } 
