@@ -136,6 +136,8 @@ const loadYouTubeIframeAPI = (): Promise<void> => {
 let apiLoadPromise: Promise<void> | null = null;
 // 创建一个全局变量来跟踪播放器是否已经初始化
 let globalPlayerInitialized = false;
+// 创建一个全局变量来存储播放器实例
+let globalPlayerInstance: any = null;
 
 export default function YouTubePlayer({
   videoId,
@@ -146,7 +148,7 @@ export default function YouTubePlayer({
   onStateChange,
   onError
 }: YouTubePlayerProps) {
-  const playerRef = useRef<any>(null);
+  const playerRef = useRef<any>(globalPlayerInstance);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [apiLoaded, setApiLoaded] = useState(false);
@@ -194,7 +196,8 @@ export default function YouTubePlayer({
       height, 
       apiLoaded,
       playerInitialized: playerInitializedRef.current,
-      globalPlayerInitialized
+      globalPlayerInitialized,
+      hasGlobalPlayer: !!globalPlayerInstance
     });
     
     // 只有在 API 加载完成后才初始化播放器
@@ -209,9 +212,23 @@ export default function YouTubePlayer({
       return;
     }
 
-    // 如果播放器已经初始化，则不再重复初始化
-    if (globalPlayerInitialized && playerRef.current) {
-      console.log('YouTubePlayer: 播放器已经初始化，不再重复创建');
+    // 如果全局播放器已经初始化，则使用它
+    if (globalPlayerInitialized && globalPlayerInstance) {
+      console.log('YouTubePlayer: 使用已存在的全局播放器实例');
+      playerRef.current = globalPlayerInstance;
+      setIsPlayerReady(true);
+      
+      // 如果视频ID变化了，加载新视频
+      if (actualVideoId !== currentVideoId) {
+        console.log('YouTubePlayer: 使用全局播放器加载新视频', actualVideoId);
+        try {
+          playerRef.current.loadVideoById(actualVideoId);
+          setCurrentVideoId(actualVideoId);
+        } catch (error) {
+          console.error('YouTubePlayer: 加载新视频时出错', error);
+        }
+      }
+      
       return;
     }
 
@@ -250,9 +267,11 @@ export default function YouTubePlayer({
           return;
         }
 
-        // 如果播放器已经初始化，则不再重复初始化
-        if (globalPlayerInitialized && playerRef.current) {
+        // 如果全局播放器已经初始化，则使用它
+        if (globalPlayerInitialized && globalPlayerInstance) {
           console.log('YouTubePlayer: 播放器已经初始化，不再重复创建（在initializePlayer中）');
+          playerRef.current = globalPlayerInstance;
+          setIsPlayerReady(true);
           return;
         }
 
@@ -279,6 +298,7 @@ export default function YouTubePlayer({
               playerRef.current = event.target;
               playerInitializedRef.current = true;
               globalPlayerInitialized = true;
+              globalPlayerInstance = event.target;
               setCurrentVideoId(actualVideoId);
               if (onReady) {
                 console.log('YouTubePlayer: 调用 onReady 回调');
@@ -312,35 +332,13 @@ export default function YouTubePlayer({
     // 开始初始化播放器
     initializePlayer();
 
-    // Clean up on unmount
+    // Clean up on unmount - 我们不再在组件卸载时销毁播放器，而是保留全局实例
     return () => {
-      // 在开发环境中，React 严格模式会导致组件多次挂载和卸载
-      // 我们只在生产环境中清理资源，避免在开发环境中重复创建和销毁播放器
-      if (process.env.NODE_ENV === 'development') {
-        console.log('YouTubePlayer: 开发环境下组件卸载，暂不销毁播放器');
-        return;
-      }
-      
-      console.log('YouTubePlayer: 组件卸载，销毁播放器');
-      if (playerRef.current && playerRef.current.destroy) {
-        try {
-          playerRef.current.destroy();
-        } catch (e) {
-          console.error('销毁播放器时出错:', e);
-        }
-      }
-      
-      // 清空容器
-      if (containerRef.current) {
-        containerRef.current.innerHTML = '';
-      }
-      
+      console.log('YouTubePlayer: 组件卸载，保留全局播放器实例');
+      // 不销毁播放器，只清理本地引用
       playerRef.current = null;
-      playerInitializedRef.current = false;
-      globalPlayerInitialized = false;
-      setIsPlayerReady(false);
     };
-  }, [actualVideoId, width, height, playerVars, onReady, onStateChange, onError, apiLoaded]); // 移除 playerId 依赖
+  }, [actualVideoId, width, height, playerVars, onReady, onStateChange, onError, apiLoaded, currentVideoId]); // 添加 currentVideoId 依赖
 
   // 当视频 ID 变化时加载新视频
   useEffect(() => {
@@ -348,7 +346,8 @@ export default function YouTubePlayer({
       videoId: actualVideoId, 
       currentVideoId, 
       isPlayerReady, 
-      hasPlayer: !!playerRef.current 
+      hasPlayer: !!playerRef.current,
+      hasGlobalPlayer: !!globalPlayerInstance
     });
     
     // 只有当播放器准备好、当前视频 ID 与新视频 ID 不同时才加载新视频
@@ -360,6 +359,10 @@ export default function YouTubePlayer({
         setTimeout(() => {
           if (playerRef.current && playerRef.current.loadVideoById) {
             playerRef.current.loadVideoById(actualVideoId);
+            setCurrentVideoId(actualVideoId);
+          } else if (globalPlayerInstance && globalPlayerInstance.loadVideoById) {
+            console.log('YouTubePlayer: 使用全局播放器加载新视频', actualVideoId);
+            globalPlayerInstance.loadVideoById(actualVideoId);
             setCurrentVideoId(actualVideoId);
           } else {
             console.error('YouTubePlayer: 播放器实例不可用或缺少 loadVideoById 方法');
@@ -377,35 +380,8 @@ export default function YouTubePlayer({
     }
   }, [actualVideoId, currentVideoId, isPlayerReady, onError]);
 
-  // 在组件卸载时清理资源
-  useEffect(() => {
-    return () => {
-      // 在开发环境中，React 严格模式会导致组件多次挂载和卸载
-      // 我们只在生产环境中清理资源，避免在开发环境中重复创建和销毁播放器
-      if (process.env.NODE_ENV === 'development') {
-        console.log('YouTubePlayer: 开发环境下组件最终卸载，暂不销毁播放器');
-        return;
-      }
-      
-      console.log('YouTubePlayer: 组件最终卸载，清理资源');
-      if (playerRef.current && playerRef.current.destroy) {
-        try {
-          playerRef.current.destroy();
-        } catch (e) {
-          console.error('销毁播放器时出错:', e);
-        }
-      }
-      
-      // 清空容器
-      if (containerRef.current) {
-        containerRef.current.innerHTML = '';
-      }
-      
-      playerRef.current = null;
-      playerInitializedRef.current = false;
-      globalPlayerInitialized = false;
-    };
-  }, []);
+  // 在组件卸载时清理资源 - 我们不再需要这个清理函数，因为我们保留全局实例
+  // 但我们保留这个空的useEffect，以便将来可能需要添加其他清理逻辑
 
   return (
     <div 
