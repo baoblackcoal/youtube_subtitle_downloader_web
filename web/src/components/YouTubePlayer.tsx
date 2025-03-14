@@ -134,6 +134,8 @@ const loadYouTubeIframeAPI = (): Promise<void> => {
 
 // 创建一个全局变量来跟踪 API 加载状态，避免重复加载
 let apiLoadPromise: Promise<void> | null = null;
+// 创建一个全局变量来跟踪播放器是否已经初始化
+let globalPlayerInitialized = false;
 
 export default function YouTubePlayer({
   videoId,
@@ -152,7 +154,7 @@ export default function YouTubePlayer({
   const playerIdRef = useRef<string>(`youtube-player-${Math.random().toString(36).substr(2, 9)}`);
   const actualVideoId = extractVideoId(videoId);
   const [currentVideoId, setCurrentVideoId] = useState<string | null>(null);
-  const playerInitializedRef = useRef(false);
+  const playerInitializedRef = useRef(globalPlayerInitialized);
 
   // 加载 YouTube IFrame API
   useEffect(() => {
@@ -191,7 +193,8 @@ export default function YouTubePlayer({
       width, 
       height, 
       apiLoaded,
-      playerInitialized: playerInitializedRef.current
+      playerInitialized: playerInitializedRef.current,
+      globalPlayerInitialized
     });
     
     // 只有在 API 加载完成后才初始化播放器
@@ -207,7 +210,7 @@ export default function YouTubePlayer({
     }
 
     // 如果播放器已经初始化，则不再重复初始化
-    if (playerInitializedRef.current && playerRef.current) {
+    if (globalPlayerInitialized && playerRef.current) {
       console.log('YouTubePlayer: 播放器已经初始化，不再重复创建');
       return;
     }
@@ -247,6 +250,12 @@ export default function YouTubePlayer({
           return;
         }
 
+        // 如果播放器已经初始化，则不再重复初始化
+        if (globalPlayerInitialized && playerRef.current) {
+          console.log('YouTubePlayer: 播放器已经初始化，不再重复创建（在initializePlayer中）');
+          return;
+        }
+
         // Initialize the player
         console.log('YouTubePlayer: 开始初始化播放器', { videoId: actualVideoId, width, height, playerVars });
         
@@ -269,6 +278,7 @@ export default function YouTubePlayer({
               setIsPlayerReady(true);
               playerRef.current = event.target;
               playerInitializedRef.current = true;
+              globalPlayerInitialized = true;
               setCurrentVideoId(actualVideoId);
               if (onReady) {
                 console.log('YouTubePlayer: 调用 onReady 回调');
@@ -305,7 +315,7 @@ export default function YouTubePlayer({
     // Clean up on unmount
     return () => {
       // 在开发环境中，React 严格模式会导致组件多次挂载和卸载
-      // 我们只在组件真正卸载时清理资源，而不是在每次重新渲染时
+      // 我们只在生产环境中清理资源，避免在开发环境中重复创建和销毁播放器
       if (process.env.NODE_ENV === 'development') {
         console.log('YouTubePlayer: 开发环境下组件卸载，暂不销毁播放器');
         return;
@@ -327,6 +337,7 @@ export default function YouTubePlayer({
       
       playerRef.current = null;
       playerInitializedRef.current = false;
+      globalPlayerInitialized = false;
       setIsPlayerReady(false);
     };
   }, [actualVideoId, width, height, playerVars, onReady, onStateChange, onError, apiLoaded]); // 移除 playerId 依赖
@@ -369,6 +380,13 @@ export default function YouTubePlayer({
   // 在组件卸载时清理资源
   useEffect(() => {
     return () => {
+      // 在开发环境中，React 严格模式会导致组件多次挂载和卸载
+      // 我们只在生产环境中清理资源，避免在开发环境中重复创建和销毁播放器
+      if (process.env.NODE_ENV === 'development') {
+        console.log('YouTubePlayer: 开发环境下组件最终卸载，暂不销毁播放器');
+        return;
+      }
+      
       console.log('YouTubePlayer: 组件最终卸载，清理资源');
       if (playerRef.current && playerRef.current.destroy) {
         try {
@@ -377,8 +395,15 @@ export default function YouTubePlayer({
           console.error('销毁播放器时出错:', e);
         }
       }
+      
+      // 清空容器
+      if (containerRef.current) {
+        containerRef.current.innerHTML = '';
+      }
+      
       playerRef.current = null;
       playerInitializedRef.current = false;
+      globalPlayerInitialized = false;
     };
   }, []);
 
