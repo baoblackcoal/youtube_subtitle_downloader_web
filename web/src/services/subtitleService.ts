@@ -105,7 +105,7 @@ export async function downloadSubtitles(
     debugLog(`转换后的字幕长度: ${convertedSubtitles.length}`);
     
     // Create a safe filename
-    const safeTitle = videoInfo.title.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
+    const safeTitle = videoInfo.title ? videoInfo.title.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_') : 'youtube_video';
     const fileName = `${safeTitle}_subtitles.${format}`;
     debugLog(`生成的文件名: ${fileName}`);
     
