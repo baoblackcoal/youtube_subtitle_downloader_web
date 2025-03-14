@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect } from 'react';
 import { FaDownload, FaPaste } from 'react-icons/fa';
 import { downloadSubtitles } from '@/services/subtitleService';
 
@@ -20,6 +20,18 @@ export default function SubtitleForm({
   const [videoUrl, setVideoUrl] = useState('https://www.youtube.com/watch?v=oc6RV5c1yd0');
   const [subtitleType, setSubtitleType] = useState<'auto' | 'manual'>('auto');
   const [format, setFormat] = useState<'vtt' | 'srt' | 'txt'>('txt');
+  const [retryCount, setRetryCount] = useState(0);
+  const maxRetries = 2;
+
+  // 记录环境信息，帮助调试
+  useEffect(() => {
+    console.log('Environment:', {
+      isDevelopment: process.env.NODE_ENV === 'development',
+      isProduction: process.env.NODE_ENV === 'production',
+      baseUrl: window.location.origin,
+      userAgent: navigator.userAgent
+    });
+  }, []);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -35,8 +47,20 @@ export default function SubtitleForm({
     
     try {
       console.log('Submitting form with:', { videoUrl, subtitleType, format });
-      await downloadSubtitles(videoUrl, subtitleType, format);
-      setSuccess('字幕下载成功！');
+      console.time('downloadSubtitles');
+      
+      const result = await downloadSubtitles(videoUrl, subtitleType, format);
+      
+      console.timeEnd('downloadSubtitles');
+      console.log('Download result:', result);
+      
+      if (result && result.success) {
+        setSuccess('字幕下载成功！');
+        // 重置重试计数
+        setRetryCount(0);
+      } else if (result && !result.success) {
+        throw new Error(result.error || '下载字幕失败');
+      }
     } catch (error) {
       console.error('下载字幕失败:', error);
       
@@ -52,6 +76,19 @@ export default function SubtitleForm({
           errorMessage = '无法从链接中获取视频 ID，请检查链接格式';
         } else if (error.message.includes('timeout') || error.message.includes('超时')) {
           errorMessage = '请求超时，请稍后再试';
+          
+          // 如果是超时错误，尝试自动重试
+          if (retryCount < maxRetries) {
+            setRetryCount(prev => prev + 1);
+            setError(`请求超时，正在自动重试 (${retryCount + 1}/${maxRetries})...`);
+            
+            // 延迟2秒后重试
+            setTimeout(() => {
+              handleSubmit(e);
+            }, 2000);
+            
+            return;
+          }
         } else if (error.message.includes('network') || error.message.includes('网络')) {
           errorMessage = '网络错误，请检查您的网络连接';
         } else {
@@ -60,6 +97,8 @@ export default function SubtitleForm({
       }
       
       setError(errorMessage);
+      // 重置重试计数
+      setRetryCount(0);
     } finally {
       setIsLoading(false);
     }
@@ -183,7 +222,7 @@ export default function SubtitleForm({
           disabled={isLoading}
         >
           {isLoading ? (
-            <span>处理中...</span>
+            <span>处理中{retryCount > 0 ? ` (重试 ${retryCount}/${maxRetries})` : '...'}</span>
           ) : (
             <>
               <FaDownload />

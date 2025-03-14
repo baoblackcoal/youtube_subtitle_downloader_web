@@ -8,6 +8,13 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 second
 
+// 使用公共代理服务
+const PUBLIC_PROXIES = [
+  'https://cors-anywhere.herokuapp.com/',
+  'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?'
+];
+
 async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -34,6 +41,31 @@ async function fetchWithRetry(url: string, config: any, retries = MAX_RETRIES): 
       return fetchWithRetry(url, config, retries - 1);
     }
     throw error;
+  }
+}
+
+// 尝试使用不同的代理获取数据
+async function fetchWithProxies(url: string, config: any): Promise<any> {
+  // 首先尝试直接请求
+  try {
+    return await fetchWithRetry(url, config);
+  } catch (directError: any) {
+    console.error('直接请求失败，尝试使用代理:', directError.message);
+    
+    // 如果直接请求失败，尝试使用代理
+    for (const proxy of PUBLIC_PROXIES) {
+      try {
+        console.log(`尝试使用代理: ${proxy}`);
+        const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
+        return await fetchWithRetry(proxyUrl, config);
+      } catch (proxyError: any) {
+        console.error(`代理 ${proxy} 请求失败:`, proxyError.message);
+        // 继续尝试下一个代理
+      }
+    }
+    
+    // 如果所有代理都失败，抛出原始错误
+    throw directError;
   }
 }
 
@@ -85,7 +117,9 @@ export async function GET(request: NextRequest) {
     try {
       const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
       console.log('Fetching video info:', videoUrl);
-      const response = await fetchWithRetry(videoUrl, axiosConfig);
+      
+      // 使用代理尝试获取数据
+      const response = await fetchWithProxies(videoUrl, axiosConfig);
       
       if (response.status !== 200) {
         console.error(`无法访问视频页面: ${response.status}`);
@@ -138,6 +172,22 @@ export async function GET(request: NextRequest) {
       });
     } catch (error) {
       console.error('获取视频信息失败:', error);
+      
+      // 尝试使用备用方法获取视频信息
+      try {
+        console.log('尝试使用备用方法获取视频信息...');
+        const videoInfo = await getVideoInfoFromAlternativeSource(videoId);
+        if (videoInfo && videoInfo.title) {
+          return NextResponse.json({
+            success: true,
+            title: videoInfo.title,
+            videoId
+          });
+        }
+      } catch (altError) {
+        console.error('备用方法获取视频信息失败:', altError);
+      }
+      
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       console.error('详细错误信息:', errorMessage);
       
@@ -158,5 +208,33 @@ export async function GET(request: NextRequest) {
       videoId,
       error: errorMessage
     }, { status: 500 });
+  }
+}
+
+// 备用方法：使用YouTube API获取视频信息
+async function getVideoInfoFromAlternativeSource(videoId: string): Promise<{ title: string } | null> {
+  try {
+    // 尝试使用YouTube oEmbed API获取视频信息
+    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+    
+    const response = await axios.get(oembedUrl, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'application/json',
+        'Origin': 'https://www.youtube.com',
+        'Referer': `https://www.youtube.com/watch?v=${videoId}`,
+      },
+      timeout: 30000,
+    });
+    
+    if (response.status === 200 && response.data && response.data.title) {
+      console.log('Found title from oEmbed API:', response.data.title);
+      return { title: response.data.title };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('备用方法获取视频信息失败:', error);
+    return null;
   }
 } 

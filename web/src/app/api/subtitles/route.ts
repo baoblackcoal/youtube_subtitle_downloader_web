@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { Cookie } from 'tough-cookie';
 
 // 更新 Cookie 字符串，添加更多必要的 cookies
 const COOKIE_STRING = 'CONSENT=YES+cb; GPS=1; VISITOR_INFO1_LIVE=true; YSC=true; PREF=tz=Asia.Tokyo';
@@ -10,6 +8,13 @@ const RETRY_DELAY = 1000; // 1 second
 
 // 更新 User-Agent 为最新版本
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+// 使用公共代理服务
+const PUBLIC_PROXIES = [
+  'https://cors-anywhere.herokuapp.com/',
+  'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?'
+];
 
 async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -37,6 +42,31 @@ async function fetchWithRetry(url: string, config: any, retries = MAX_RETRIES): 
       return fetchWithRetry(url, config, retries - 1);
     }
     throw error;
+  }
+}
+
+// 尝试使用不同的代理获取数据
+async function fetchWithProxies(url: string, config: any): Promise<any> {
+  // 首先尝试直接请求
+  try {
+    return await fetchWithRetry(url, config);
+  } catch (directError: any) {
+    console.error('直接请求失败，尝试使用代理:', directError.message);
+    
+    // 如果直接请求失败，尝试使用代理
+    for (const proxy of PUBLIC_PROXIES) {
+      try {
+        console.log(`尝试使用代理: ${proxy}`);
+        const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
+        return await fetchWithRetry(proxyUrl, config);
+      } catch (proxyError: any) {
+        console.error(`代理 ${proxy} 请求失败:`, proxyError.message);
+        // 继续尝试下一个代理
+      }
+    }
+    
+    // 如果所有代理都失败，抛出原始错误
+    throw directError;
   }
 }
 
@@ -97,7 +127,8 @@ export async function GET(request: NextRequest) {
     console.log('Fetching video page:', videoUrl);
     
     try {
-      const response = await fetchWithRetry(videoUrl, axiosConfig);
+      // 使用代理尝试获取数据
+      const response = await fetchWithProxies(videoUrl, axiosConfig);
       
       if (response.status !== 200) {
         console.error(`无法访问视频页面: ${response.status}`);
@@ -120,6 +151,20 @@ export async function GET(request: NextRequest) {
     } catch (error) {
       console.error('获取字幕失败:', error);
       
+      // 尝试使用备用方法获取字幕
+      try {
+        console.log('尝试使用备用方法获取字幕...');
+        const subtitleData = await getSubtitlesFromAlternativeSource(videoId, subtitleType);
+        if (subtitleData) {
+          return NextResponse.json({ 
+            success: true, 
+            subtitles: subtitleData 
+          });
+        }
+      } catch (altError) {
+        console.error('备用方法获取字幕失败:', altError);
+      }
+      
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       console.error('详细错误信息:', errorMessage);
       return NextResponse.json({ 
@@ -139,6 +184,88 @@ export async function GET(request: NextRequest) {
       videoId,
       subtitleType,
     }, { status: 500 });
+  }
+}
+
+// 备用方法：使用YouTube API获取字幕
+async function getSubtitlesFromAlternativeSource(videoId: string, subtitleType: 'auto' | 'manual'): Promise<string | null> {
+  try {
+    // 使用YouTube API获取字幕列表
+    const apiUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&type=${subtitleType === 'auto' ? 'asr' : 'track'}&lang=en&fmt=srv1`;
+    
+    const response = await axios.get(apiUrl, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': 'https://www.youtube.com',
+        'Referer': `https://www.youtube.com/watch?v=${videoId}`,
+      },
+      timeout: 30000,
+    });
+    
+    if (response.status === 200 && response.data) {
+      // 将API返回的数据转换为我们需要的XML格式
+      return convertToTranscriptXml(response.data);
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('备用方法获取字幕失败:', error);
+    return null;
+  }
+}
+
+// 将YouTube API返回的数据转换为我们需要的XML格式
+function convertToTranscriptXml(data: any): string {
+  try {
+    // 如果数据已经是XML格式，直接返回
+    if (typeof data === 'string' && data.includes('<?xml')) {
+      return data;
+    }
+    
+    // 创建一个简单的XML结构
+    let xml = '<?xml version="1.0" encoding="utf-8" ?><transcript>\n';
+    
+    // 如果数据是JSON格式，尝试解析
+    if (typeof data === 'string') {
+      try {
+        data = JSON.parse(data);
+      } catch (e) {
+        // 如果解析失败，保持原样
+      }
+    }
+    
+    // 处理不同格式的数据
+    if (data && data.events) {
+      // 处理YouTube API返回的JSON格式
+      for (const event of data.events) {
+        if (event.segs && event.tStartMs !== undefined) {
+          const start = event.tStartMs / 1000;
+          const dur = (event.dDurationMs || 1000) / 1000;
+          const text = event.segs.map((seg: any) => seg.utf8).join('');
+          if (text.trim()) {
+            xml += `  <text start="${start}" dur="${dur}">${text}</text>\n`;
+          }
+        }
+      }
+    } else if (Array.isArray(data)) {
+      // 处理数组格式
+      for (const item of data) {
+        if (item.start !== undefined && item.text) {
+          xml += `  <text start="${item.start}" dur="${item.dur || 1}">${item.text}</text>\n`;
+        }
+      }
+    } else {
+      // 如果无法识别格式，返回一个简单的示例
+      xml += '  <text start="0" dur="1">无法解析字幕数据</text>\n';
+    }
+    
+    xml += '</transcript>';
+    return xml;
+  } catch (error) {
+    console.error('转换字幕格式失败:', error);
+    // 返回一个简单的示例
+    return '<?xml version="1.0" encoding="utf-8" ?><transcript>\n  <text start="0" dur="1">无法解析字幕数据</text>\n</transcript>';
   }
 }
 
@@ -222,7 +349,7 @@ async function extractSubtitleData(
       console.log('获取字幕URL:', anyTrack.baseUrl);
       
       // 获取字幕内容
-      const subtitleResponse = await fetchWithRetry(anyTrack.baseUrl, {
+      const subtitleResponse = await fetchWithProxies(anyTrack.baseUrl, {
         ...axiosConfig,
         headers: {
           ...axiosConfig.headers,
@@ -241,7 +368,7 @@ async function extractSubtitleData(
     console.log('获取字幕URL:', englishTrack.baseUrl);
 
     // 获取字幕内容
-    const subtitleResponse = await fetchWithRetry(englishTrack.baseUrl, {
+    const subtitleResponse = await fetchWithProxies(englishTrack.baseUrl, {
       ...axiosConfig,
       headers: {
         ...axiosConfig.headers,
@@ -306,7 +433,7 @@ async function extractFromCaptionsData(
       console.log('获取字幕URL:', anyTrack.baseUrl);
       
       // 获取字幕内容
-      const subtitleResponse = await fetchWithRetry(anyTrack.baseUrl, {
+      const subtitleResponse = await fetchWithProxies(anyTrack.baseUrl, {
         ...axiosConfig,
         headers: {
           ...axiosConfig.headers,
@@ -322,7 +449,7 @@ async function extractFromCaptionsData(
       return subtitleResponse.data;
     }
 
-    const subtitleResponse = await fetchWithRetry(englishTrack.baseUrl, {
+    const subtitleResponse = await fetchWithProxies(englishTrack.baseUrl, {
       ...axiosConfig,
       headers: {
         ...axiosConfig.headers,

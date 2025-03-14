@@ -5,18 +5,27 @@ import { YouTubeApiService } from './youtubeApiService';
 const youtubeApiService = new YouTubeApiService();
 
 /**
+ * 下载结果接口
+ */
+export interface DownloadResult {
+  success: boolean;
+  error?: string;
+  fileName?: string;
+}
+
+/**
  * Downloads subtitles from a YouTube video
  * 
  * @param url - The YouTube video URL or video ID
  * @param subtitleType - The subtitle type: 'auto' or 'manual'
  * @param format - The output format: 'vtt', 'srt', or 'txt'
- * @returns A promise that resolves when the download is complete
+ * @returns A promise that resolves to a download result object
  */
 export async function downloadSubtitles(
   url: string, 
   subtitleType: 'auto' | 'manual', 
   format: 'vtt' | 'srt' | 'txt'
-): Promise<void> {
+): Promise<DownloadResult> {
   try {
     if (!url.trim()) {
       throw new Error('请输入视频链接');
@@ -35,6 +44,10 @@ export async function downloadSubtitles(
     // Get video info for the title
     const videoInfo = await youtubeApiService.getVideoInfo(videoId);
     
+    if (!videoInfo.success) {
+      throw new Error(videoInfo.error || '获取视频信息失败');
+    }
+    
     // Get subtitles
     const subtitleResponse = await youtubeApiService.getSubtitles(videoId, subtitleType);
     
@@ -52,9 +65,17 @@ export async function downloadSubtitles(
     // Download the file
     downloadFile(convertedSubtitles, fileName);
     
+    return {
+      success: true,
+      fileName: fileName
+    };
+    
   } catch (error) {
     console.error('下载字幕失败:', error);
-    throw error;
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '未知错误'
+    };
   }
 }
 
