@@ -1,4 +1,3 @@
-import axios from 'axios';
 import { extractVideoId } from '@/utils/urlUtils';
 
 /**
@@ -18,31 +17,37 @@ export class YouTubeApiService {
   /**
    * 使用重试逻辑发送请求
    * @param url 请求URL
-   * @param config axios配置
+   * @param options fetch选项
    * @param retries 剩余重试次数
    * @returns 请求响应
    */
-  private async fetchWithRetry(url: string, config: any, retries = this.maxRetries): Promise<any> {
+  private async fetchWithRetry(url: string, options: RequestInit = {}, retries = this.maxRetries): Promise<Response> {
     try {
       console.log(`Fetching URL: ${url}`);
-      const response = await axios(url, config);
-      console.log(`Response status: ${response.status}`);
+      
+      const defaultOptions: RequestInit = {
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          ...options.headers,
+        },
+        ...options,
+      };
+      
+      const response = await fetch(url, defaultOptions);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+      
       return response;
     } catch (error: any) {
       console.error(`Request failed (${retries} retries left):`, error.message);
       
-      if (error.response) {
-        console.error('Error response:', {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          headers: error.response.headers,
-        });
-      }
-      
       if (retries > 0) {
         console.log(`Retrying... ${retries} attempts left`);
         await new Promise(resolve => setTimeout(resolve, this.retryDelay));
-        return this.fetchWithRetry(url, config, retries - 1);
+        return this.fetchWithRetry(url, options, retries - 1);
       }
       throw error;
     }
@@ -60,54 +65,42 @@ export class YouTubeApiService {
       
       // 使用我们的API端点而不是直接请求YouTube
       const response = await this.fetchWithRetry(`${this.apiBaseUrl}/api/video-info?videoId=${videoId}`, {
-        timeout: 60000, // 设置60秒超时
-        headers: {
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-          'Expires': '0',
-        }
+        cache: 'no-store',
+        signal: AbortSignal.timeout(60000) // 60秒超时
       });
       
-      console.log('Video info response:', response.data);
+      const data = await response.json();
+      console.log('Video info response:', data);
       
       // 检查响应状态
-      if (!response.data.success) {
-        console.error('Video info API error:', response.data.error);
-        throw new Error(response.data.error || '获取视频信息失败');
+      if (!data.success) {
+        console.error('Video info API error:', data.error);
+        throw new Error(data.error || '获取视频信息失败');
       }
       
       return {
         success: true,
-        title: response.data.title || `Video_${videoId}`,
+        title: data.title || `Video_${videoId}`,
         videoId: videoId
       };
     } catch (error) {
       console.error('获取视频信息失败:', error);
-      // 如果是网络错误，提供更具体的错误信息
-      if (axios.isAxiosError(error)) {
-        console.error('Axios error details:', {
-          status: error.response?.status,
-          data: error.response?.data,
-          message: error.message,
-          code: error.code,
-          isTimeout: error.code === 'ECONNABORTED'
-        });
-        
-        // 根据错误类型提供更具体的错误信息
-        if (error.code === 'ECONNABORTED') {
-          return { 
-            success: false, 
-            error: '请求超时，请稍后再试',
-            title: `Video_${videoId}`
-          };
-        } else if (!error.response) {
-          return { 
-            success: false, 
-            error: '网络错误，请检查您的网络连接',
-            title: `Video_${videoId}`
-          };
-        }
+      
+      // 分析网络错误
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        return { 
+          success: false, 
+          error: '网络错误，请检查您的网络连接',
+          title: `Video_${videoId}`
+        };
+      } else if (error instanceof DOMException && error.name === 'AbortError') {
+        return { 
+          success: false, 
+          error: '请求超时，请稍后再试',
+          title: `Video_${videoId}`
+        };
       }
+      
       return { 
         success: false, 
         error: error instanceof Error ? error.message : '未知错误',
@@ -131,60 +124,40 @@ export class YouTubeApiService {
       const response = await this.fetchWithRetry(
         `${this.apiBaseUrl}/api/subtitles?videoId=${videoId}&subtitleType=${subtitleType}`,
         {
-          timeout: 60000, // 增加超时时间到60秒
-          headers: {
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'Expires': '0',
-          }
+          cache: 'no-store',
+          signal: AbortSignal.timeout(60000) // 60秒超时
         }
       );
       
+      const data = await response.json();
       console.log('Subtitles response status:', response.status);
       
       // 检查响应状态
-      if (!response.data.success) {
-        console.error('Subtitles API error:', response.data.error);
-        throw new Error(response.data.error || '获取字幕失败');
+      if (!data.success) {
+        console.error('Subtitles API error:', data.error);
+        throw new Error(data.error || '获取字幕失败');
       }
       
       return { 
         success: true, 
-        subtitles: response.data.subtitles 
+        subtitles: data.subtitles 
       };
     } catch (error) {
       console.error('获取字幕失败:', error);
-      // 如果是网络错误，提供更具体的错误信息
-      if (axios.isAxiosError(error)) {
-        console.error('Axios error details:', {
-          status: error.response?.status,
-          data: error.response?.data,
-          message: error.message,
-          code: error.code,
-          isTimeout: error.code === 'ECONNABORTED'
-        });
-        
-        // 根据错误类型提供更具体的错误信息
-        if (error.code === 'ECONNABORTED') {
-          return { 
-            success: false, 
-            error: '请求超时，请稍后再试'
-          };
-        } else if (!error.response) {
-          return { 
-            success: false, 
-            error: '网络错误，请检查您的网络连接'
-          };
-        }
-        
-        // 如果服务器返回了错误信息，使用服务器的错误信息
-        if (error.response?.data?.error) {
-          return { 
-            success: false, 
-            error: error.response.data.error
-          };
-        }
+      
+      // 分析网络错误
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        return { 
+          success: false, 
+          error: '网络错误，请检查您的网络连接'
+        };
+      } else if (error instanceof DOMException && error.name === 'AbortError') {
+        return { 
+          success: false, 
+          error: '请求超时，请稍后再试'
+        };
       }
+      
       return { 
         success: false, 
         error: error instanceof Error ? error.message : '未知错误' 

@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import axios from 'axios';
 
 // 更新 Cookie 字符串
 const COOKIE_STRING = 'CONSENT=YES+cb; GPS=1; VISITOR_INFO1_LIVE=true; YSC=true; PREF=tz=Asia.Tokyo';
@@ -34,36 +33,50 @@ async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchWithRetry(url: string, config: any, retries = MAX_RETRIES): Promise<any> {
+async function fetchWithRetry(url: string, options: any = {}, retries = MAX_RETRIES): Promise<Response> {
   try {
     console.log(`Fetching URL: ${url}`);
-    const response = await axios(url, config);
+    
+    // 设置默认选项
+    const fetchOptions = {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+        'Cookie': COOKIE_STRING,
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        ...options.headers
+      },
+      ...options
+    };
+    
+    const response = await fetch(url, fetchOptions);
     console.log(`Response status: ${response.status}`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP 错误! 状态码: ${response.status}`);
+    }
+    
     return response;
   } catch (error: any) {
     console.error(`Request failed (${retries} retries left):`, error.message);
-    if (error.response) {
-      console.error('Error response:', {
-        status: error.response.status,
-        headers: error.response.headers,
-        data: error.response.data
-      });
-    }
     
     if (retries > 0) {
       console.log(`Retrying... ${retries} attempts left`);
       await sleep(RETRY_DELAY);
-      return fetchWithRetry(url, config, retries - 1);
+      return fetchWithRetry(url, options, retries - 1);
     }
     throw error;
   }
 }
 
 // 尝试使用不同的代理获取数据
-async function fetchWithProxies(url: string, config: any): Promise<any> {
+async function fetchWithProxies(url: string, options: any = {}): Promise<Response> {
   // 首先尝试直接请求
   try {
-    return await fetchWithRetry(url, config);
+    return await fetchWithRetry(url, options);
   } catch (directError: any) {
     console.error('直接请求失败，尝试使用代理:', directError.message);
     
@@ -72,7 +85,7 @@ async function fetchWithProxies(url: string, config: any): Promise<any> {
       // 使用我们配置的代理路径
       const internalProxyUrl = url.replace('https://www.youtube.com', getYouTubeProxyUrl());
       console.log(`尝试使用内部代理: ${internalProxyUrl}`);
-      return await fetchWithRetry(internalProxyUrl, config);
+      return await fetchWithRetry(internalProxyUrl, options);
     } catch (internalProxyError: any) {
       console.error('内部代理请求失败:', internalProxyError.message);
       
@@ -81,7 +94,7 @@ async function fetchWithProxies(url: string, config: any): Promise<any> {
         try {
           console.log(`尝试使用公共代理: ${proxy}`);
           const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
-          return await fetchWithRetry(proxyUrl, config);
+          return await fetchWithRetry(proxyUrl, options);
         } catch (proxyError: any) {
           console.error(`代理 ${proxy} 请求失败:`, proxyError.message);
           // 继续尝试下一个代理
@@ -111,136 +124,12 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 配置 axios 请求
-    const axiosConfig = {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Cookie': COOKIE_STRING,
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Expires': '0',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Sec-Ch-Ua-Full-Version': '"120.0.6099.130"',
-        'DNT': '1',
-      },
-      timeout: 60000, // 增加超时时间到60秒
-      maxRedirects: 5,
-      decompress: true,
-      validateStatus: function (status: number) {
-        return status >= 200 && status < 400;
-      },
-      responseType: 'text' as const,
-      transformResponse: [(data: string) => data],
-    };
-
-    try {
-      const youtubeBaseUrl = getYouTubeProxyUrl();
-      const videoUrl = `${youtubeBaseUrl}/watch?v=${videoId}`;
-      console.log('Fetching video info:', videoUrl);
-      
-      // 使用代理尝试获取数据
-      const response = await fetchWithProxies(videoUrl, axiosConfig);
-      
-      if (response.status !== 200) {
-        console.error(`无法访问视频页面: ${response.status}`);
-        throw new Error(`无法访问视频页面: ${response.status}`);
-      }
-
-      const html = response.data;
-      let title = '';
-      let source = 'html_parsing';
-
-      // 1. 尝试从 JSON 数据中提取标题
-      const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
-      if (jsonMatch) {
-        try {
-          const config = JSON.parse(jsonMatch[1]);
-          title = config.videoDetails?.title;
-          console.log('Found title from JSON:', title);
-          source = 'json_data';
-        } catch (e) {
-          console.error('解析 JSON 数据失败:', e);
-        }
-      }
-
-      // 2. 如果上面的方法失败，尝试从 meta 标签中提取标题
-      if (!title) {
-        const metaTitleMatch = html.match(/<meta\s+name="title"\s+content="([^"]+)"/);
-        if (metaTitleMatch) {
-          title = metaTitleMatch[1];
-          console.log('Found title from meta tag:', title);
-          source = 'meta_tag';
-        }
-      }
-
-      // 3. 如果还是没有标题，尝试从 document title 中提取
-      if (!title) {
-        const titleMatch = html.match(/<title>([^<]+)<\/title>/);
-        if (titleMatch) {
-          title = titleMatch[1].replace(' - YouTube', '');
-          console.log('Found title from document title:', title);
-          source = 'document_title';
-        }
-      }
-
-      // 如果所有方法都失败，使用默认标题
-      if (!title) {
-        title = `Video_${videoId}`;
-        console.log('Using default title');
-        source = 'default';
-      }
-
-      return NextResponse.json({
-        success: true,
-        title,
-        videoId,
-        source
-      });
-    } catch (error) {
-      console.error('获取视频信息失败:', error);
-      
-      // 尝试使用备用方法获取视频信息
-      try {
-        console.log('尝试使用备用方法获取视频信息...');
-        const videoInfo = await getVideoInfoFromAlternativeSource(videoId);
-        if (videoInfo && videoInfo.title) {
-          return NextResponse.json({
-            success: true,
-            title: videoInfo.title,
-            videoId,
-            source: 'oembed_api'
-          });
-        }
-      } catch (altError) {
-        console.error('备用方法获取视频信息失败:', altError);
-      }
-      
-      const errorMessage = error instanceof Error ? error.message : '未知错误';
-      console.error('详细错误信息:', errorMessage);
-      
-      // 即使出错也返回一个默认标题，这样用户体验会更好
-      return NextResponse.json({
-        success: true,
-        title: `Video_${videoId}`,
-        videoId,
-        source: 'fallback'
-      });
-    }
+    // 使用新的获取视频信息方法
+    const result = await getVideoInfo(videoId);
+    return NextResponse.json(result);
   } catch (error) {
     console.error('获取视频信息失败:', error);
     const errorMessage = error instanceof Error ? error.message : '未知错误';
-    console.error('详细错误信息:', errorMessage);
     return NextResponse.json({
       success: false,
       title: `Video_${videoId}`,
@@ -248,6 +137,99 @@ export async function GET(request: NextRequest) {
       error: errorMessage,
       source: 'error'
     }, { status: 500 });
+  }
+}
+
+/**
+ * Gets information about a YouTube video
+ * 
+ * @param videoId - The YouTube video ID
+ * @returns A promise that resolves to the video info
+ */
+async function getVideoInfo(videoId: string) {
+  try {
+    const youtubeBaseUrl = getYouTubeProxyUrl();
+    const videoUrl = `${youtubeBaseUrl}/watch?v=${videoId}`;
+    console.log('Fetching video info:', videoUrl);
+    
+    const response = await fetchWithProxies(videoUrl);
+    const html = await response.text();
+    
+    let title = '';
+    let source = 'html_parsing';
+
+    // 1. 尝试从 JSON 数据中提取标题
+    const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+    if (jsonMatch) {
+      try {
+        const config = JSON.parse(jsonMatch[1]);
+        title = config.videoDetails?.title;
+        console.log('Found title from JSON:', title);
+        source = 'json_data';
+      } catch (e) {
+        console.error('解析 JSON 数据失败:', e);
+      }
+    }
+
+    // 2. 如果上面的方法失败，尝试从 meta 标签中提取标题
+    if (!title) {
+      const metaTitleMatch = html.match(/<meta\s+name="title"\s+content="([^"]+)"/);
+      if (metaTitleMatch) {
+        title = metaTitleMatch[1];
+        console.log('Found title from meta tag:', title);
+        source = 'meta_tag';
+      }
+    }
+
+    // 3. 如果还是没有标题，尝试从 document title 中提取
+    if (!title) {
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/);
+      if (titleMatch) {
+        title = titleMatch[1].replace(' - YouTube', '');
+        console.log('Found title from document title:', title);
+        source = 'document_title';
+      }
+    }
+
+    // 如果所有方法都失败，使用默认标题
+    if (!title) {
+      title = `Video_${videoId}`;
+      console.log('Using default title');
+      source = 'default';
+    }
+
+    return {
+      success: true,
+      title,
+      videoId,
+      source
+    };
+  } catch (error) {
+    console.error('获取视频信息失败:', error);
+    
+    // 尝试使用备用方法获取视频信息
+    try {
+      console.log('尝试使用备用方法获取视频信息...');
+      const videoInfo = await getVideoInfoFromAlternativeSource(videoId);
+      if (videoInfo && videoInfo.title) {
+        return {
+          success: true,
+          title: videoInfo.title,
+          videoId,
+          source: 'oembed_api'
+        };
+      }
+    } catch (altError) {
+      console.error('备用方法获取视频信息失败:', altError);
+    }
+    
+    // 即使出错也返回一个默认标题，这样用户体验会更好
+    return {
+      success: true,
+      title: `Video_${videoId}`,
+      videoId,
+      source: 'fallback'
+    };
   }
 }
 
@@ -260,19 +242,12 @@ async function getVideoInfoFromAlternativeSource(videoId: string): Promise<{ tit
     
     console.log('尝试使用oEmbed API获取视频信息:', oembedUrl);
     
-    const response = await axios.get(oembedUrl, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'application/json',
-        'Origin': 'https://www.youtube.com',
-        'Referer': `https://www.youtube.com/watch?v=${videoId}`,
-      },
-      timeout: 30000,
-    });
+    const response = await fetchWithProxies(oembedUrl);
+    const data = await response.json();
     
-    if (response.status === 200 && response.data && response.data.title) {
-      console.log('Found title from oEmbed API:', response.data.title);
-      return { title: response.data.title };
+    if (data && data.title) {
+      console.log('Found title from oEmbed API:', data.title);
+      return { title: data.title };
     }
     
     return null;

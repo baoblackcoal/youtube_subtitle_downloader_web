@@ -3,11 +3,10 @@ import axios from 'axios';
 
 // 更新 Cookie 字符串，添加更多必要的 cookies
 const COOKIE_STRING = 'CONSENT=YES+cb; GPS=1; VISITOR_INFO1_LIVE=true; YSC=true; PREF=tz=Asia.Tokyo';
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000; // 1 second
-
 // 更新 User-Agent 为最新版本
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000; // 1 second
 
 // 使用公共代理服务
 const PUBLIC_PROXIES = [
@@ -35,36 +34,50 @@ async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchWithRetry(url: string, config: any, retries = MAX_RETRIES): Promise<any> {
+async function fetchWithRetry(url: string, options: any = {}, retries = MAX_RETRIES): Promise<Response> {
   try {
     console.log(`Fetching URL: ${url}`);
-    const response = await axios(url, config);
+    
+    // 设置默认选项
+    const fetchOptions = {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+        'Cookie': COOKIE_STRING,
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        ...options.headers
+      },
+      ...options
+    };
+    
+    const response = await fetch(url, fetchOptions);
     console.log(`Response status: ${response.status}`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP 错误! 状态码: ${response.status}`);
+    }
+    
     return response;
   } catch (error: any) {
     console.error(`Request failed (${retries} retries left):`, error.message);
-    if (error.response) {
-      console.error('Error response:', {
-        status: error.response.status,
-        headers: error.response.headers,
-        data: error.response.data
-      });
-    }
     
     if (retries > 0) {
       console.log(`Retrying... ${retries} attempts left`);
       await sleep(RETRY_DELAY);
-      return fetchWithRetry(url, config, retries - 1);
+      return fetchWithRetry(url, options, retries - 1);
     }
     throw error;
   }
 }
 
 // 尝试使用不同的代理获取数据
-async function fetchWithProxies(url: string, config: any): Promise<any> {
+async function fetchWithProxies(url: string, options: any = {}): Promise<Response> {
   // 首先尝试直接请求
   try {
-    return await fetchWithRetry(url, config);
+    return await fetchWithRetry(url, options);
   } catch (directError: any) {
     console.error('直接请求失败，尝试使用代理:', directError.message);
     
@@ -73,7 +86,7 @@ async function fetchWithProxies(url: string, config: any): Promise<any> {
       // 使用我们配置的代理路径
       const internalProxyUrl = url.replace('https://www.youtube.com', getYouTubeProxyUrl());
       console.log(`尝试使用内部代理: ${internalProxyUrl}`);
-      return await fetchWithRetry(internalProxyUrl, config);
+      return await fetchWithRetry(internalProxyUrl, options);
     } catch (internalProxyError: any) {
       console.error('内部代理请求失败:', internalProxyError.message);
       
@@ -82,7 +95,7 @@ async function fetchWithProxies(url: string, config: any): Promise<any> {
         try {
           console.log(`尝试使用公共代理: ${proxy}`);
           const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
-          return await fetchWithRetry(proxyUrl, config);
+          return await fetchWithRetry(proxyUrl, options);
         } catch (proxyError: any) {
           console.error(`代理 ${proxy} 请求失败:`, proxyError.message);
           // 继续尝试下一个代理
@@ -120,101 +133,174 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 配置 axios 请求
-    const axiosConfig = {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Cookie': COOKIE_STRING,
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Sec-Ch-Ua-Full-Version': '"120.0.6099.130"',
-        'DNT': '1',
-      },
-      timeout: 60000, // 增加超时时间到60秒
-      maxRedirects: 5,
-      decompress: true,
-      validateStatus: function (status: number) {
-        return status >= 200 && status < 400;
-      },
-      responseType: 'text' as const,
-      transformResponse: [(data: string) => data],
-    };
-
-    // 获取视频页面
-    const youtubeBaseUrl = getYouTubeProxyUrl();
-    const videoUrl = `${youtubeBaseUrl}/watch?v=${videoId}`;
-    console.log('Fetching video page:', videoUrl);
-    
-    try {
-      // 使用代理尝试获取数据
-      const response = await fetchWithProxies(videoUrl, axiosConfig);
-      
-      if (response.status !== 200) {
-        console.error(`无法访问视频页面: ${response.status}`);
-        throw new Error(`无法访问视频页面: ${response.status}`);
-      }
-      
-      const html = response.data;
-      
-      // 提取字幕数据
-      const subtitleData = await extractSubtitleData(html, subtitleType, axiosConfig, youtubeBaseUrl);
-      if (!subtitleData) {
-        console.error('无法获取字幕数据');
-        throw new Error('无法获取字幕数据');
-      }
-      
-      return NextResponse.json({ 
-        success: true, 
-        subtitles: subtitleData 
-      });
-    } catch (error) {
-      console.error('获取字幕失败:', error);
-      
-      // 尝试使用备用方法获取字幕
-      try {
-        console.log('尝试使用备用方法获取字幕...');
-        const subtitleData = await getSubtitlesFromAlternativeSource(videoId, subtitleType);
-        if (subtitleData) {
-          return NextResponse.json({ 
-            success: true, 
-            subtitles: subtitleData 
-          });
-        }
-      } catch (altError) {
-        console.error('备用方法获取字幕失败:', altError);
-      }
-      
-      const errorMessage = error instanceof Error ? error.message : '未知错误';
-      console.error('详细错误信息:', errorMessage);
-      return NextResponse.json({ 
-        success: false, 
-        error: errorMessage,
-        videoId,
-        subtitleType,
-      }, { status: 500 });
-    }
+    // 使用新的获取字幕方法
+    const result = await getSubtitles(videoId, subtitleType);
+    return NextResponse.json(result);
   } catch (error) {
     console.error('获取字幕失败:', error);
     const errorMessage = error instanceof Error ? error.message : '未知错误';
-    console.error('详细错误信息:', errorMessage);
     return NextResponse.json({ 
       success: false, 
       error: errorMessage,
       videoId,
       subtitleType,
     }, { status: 500 });
+  }
+}
+
+/**
+ * Gets subtitles for a YouTube video
+ * 
+ * @param videoId - The YouTube video ID
+ * @param subtitleType - The subtitle type ('auto' or 'manual')
+ * @returns A promise that resolves to the subtitle data
+ */
+async function getSubtitles(videoId: string, subtitleType: 'auto' | 'manual') {
+  try {
+    // Get the video page
+    const youtubeBaseUrl = getYouTubeProxyUrl();
+    const videoUrl = `${youtubeBaseUrl}/watch?v=${videoId}`;
+    console.log('Fetching video page:', videoUrl);
+    
+    const response = await fetchWithProxies(videoUrl);
+    const html = await response.text();
+    
+    // Extract subtitle data
+    const subtitleData = await extractSubtitleData(html, subtitleType);
+    if (!subtitleData) {
+      throw new Error('无法获取字幕数据');
+    }
+    
+    return { 
+      success: true, 
+      subtitles: subtitleData 
+    };
+  } catch (error) {
+    console.error('获取字幕失败:', error);
+    
+    // 尝试使用备用方法获取字幕
+    try {
+      console.log('尝试使用备用方法获取字幕...');
+      const subtitleData = await getSubtitlesFromAlternativeSource(videoId, subtitleType);
+      if (subtitleData) {
+        return { 
+          success: true, 
+          subtitles: subtitleData 
+        };
+      }
+    } catch (altError) {
+      console.error('备用方法获取字幕失败:', altError);
+    }
+    
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : '未知错误' 
+    };
+  }
+}
+
+/**
+ * Extracts subtitle data from a YouTube page HTML
+ * 
+ * @param html - The HTML of the YouTube page
+ * @param subtitleType - The subtitle type ('auto' or 'manual')
+ * @returns A promise that resolves to the subtitle data
+ */
+async function extractSubtitleData(html: string, subtitleType: 'auto' | 'manual'): Promise<string | null> {
+  try {
+    // Try to extract subtitle info from different data sources
+    let ytInitialData = null;
+    const dataMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+    
+    if (dataMatch) {
+      try {
+        ytInitialData = JSON.parse(dataMatch[1]);
+        console.log('Successfully parsed video config');
+      } catch (e) {
+        console.error('解析 ytInitialPlayerResponse 失败:', e);
+      }
+    }
+    
+    if (!ytInitialData || !ytInitialData.captions) {
+      throw new Error('找不到字幕信息');
+    }
+    
+    const captions = ytInitialData.captions.playerCaptionsTracklistRenderer;
+    if (!captions || !captions.captionTracks || captions.captionTracks.length === 0) {
+      throw new Error('该视频没有可用的字幕');
+    }
+    
+    console.log('找到字幕轨道:', captions.captionTracks.length);
+    
+    // 记录所有可用的字幕轨道，以便调试
+    captions.captionTracks.forEach((track: any, index: number) => {
+      console.log(`Track ${index}:`, {
+        languageCode: track.languageCode,
+        kind: track.kind,
+        name: track.name?.simpleText || 'Unknown',
+        isAuto: track.kind === 'asr'
+      });
+    });
+    
+    // Find matching subtitle track
+    const subtitleTrack = captions.captionTracks.find((track: any) => {
+      const isAuto = track.kind === 'asr';
+      const isEnglish = track.languageCode === 'en';
+      return subtitleType === 'auto' ? (isAuto && isEnglish) : (!isAuto && isEnglish);
+    });
+    
+    if (!subtitleTrack) {
+      // 如果找不到英文字幕，尝试使用任何可用的字幕
+      console.log('找不到所选类型的英文字幕，尝试使用任何可用的字幕');
+      const anyTrack = captions.captionTracks[0]; // 使用第一个可用的字幕轨道
+      if (!anyTrack) {
+        throw new Error('找不到所选类型的英文字幕，且没有其他可用字幕');
+      }
+      console.log('使用替代字幕轨道:', {
+        languageCode: anyTrack.languageCode,
+        kind: anyTrack.kind,
+        name: anyTrack.name?.simpleText || 'Unknown'
+      });
+      
+      // Process subtitle URL
+      let subtitleUrl = anyTrack.baseUrl;
+      // 确保URL是完整的
+      if (subtitleUrl.startsWith('api/') || subtitleUrl.startsWith('/api/')) {
+        subtitleUrl = `https://www.youtube.com/${subtitleUrl.startsWith('/') ? subtitleUrl.slice(1) : subtitleUrl}`;
+      }
+      
+      // 替换为代理URL（如果需要）
+      const youtubeBaseUrl = getYouTubeProxyUrl();
+      if (youtubeBaseUrl !== 'https://www.youtube.com') {
+        subtitleUrl = subtitleUrl.replace('https://www.youtube.com', youtubeBaseUrl);
+      }
+      
+      console.log('获取字幕URL:', subtitleUrl);
+      
+      const subtitleResponse = await fetchWithProxies(subtitleUrl);
+      return await subtitleResponse.text();
+    }
+    
+    // Process subtitle URL for the found track
+    let subtitleUrl = subtitleTrack.baseUrl;
+    // 确保URL是完整的
+    if (subtitleUrl.startsWith('api/') || subtitleUrl.startsWith('/api/')) {
+      subtitleUrl = `https://www.youtube.com/${subtitleUrl.startsWith('/') ? subtitleUrl.slice(1) : subtitleUrl}`;
+    }
+    
+    // 替换为代理URL（如果需要）
+    const youtubeBaseUrl = getYouTubeProxyUrl();
+    if (youtubeBaseUrl !== 'https://www.youtube.com') {
+      subtitleUrl = subtitleUrl.replace('https://www.youtube.com', youtubeBaseUrl);
+    }
+    
+    console.log('获取字幕URL:', subtitleUrl);
+    
+    const subtitleResponse = await fetchWithProxies(subtitleUrl);
+    return await subtitleResponse.text();
+  } catch (error) {
+    console.error('提取字幕数据失败:', error);
+    throw error;
   }
 }
 
@@ -227,19 +313,17 @@ async function getSubtitlesFromAlternativeSource(videoId: string, subtitleType: 
     
     console.log('尝试使用备用API获取字幕:', apiUrl);
     
-    const response = await axios.get(apiUrl, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'application/json, text/plain, */*',
-        'Origin': 'https://www.youtube.com',
-        'Referer': `https://www.youtube.com/watch?v=${videoId}`,
-      },
-      timeout: 30000,
-    });
+    const response = await fetchWithProxies(apiUrl);
+    const data = await response.text();
     
-    if (response.status === 200 && response.data) {
-      // 将API返回的数据转换为我们需要的XML格式
-      return convertToTranscriptXml(response.data);
+    if (data) {
+      // 检查是否已经是XML格式
+      if (data.includes('<?xml')) {
+        return data;
+      } else {
+        // 尝试转换为XML格式
+        return convertToTranscriptXml(data);
+      }
     }
     
     return null;
@@ -300,238 +384,5 @@ function convertToTranscriptXml(data: any): string {
     console.error('转换字幕格式失败:', error);
     // 返回一个简单的示例
     return '<?xml version="1.0" encoding="utf-8" ?><transcript>\n  <text start="0" dur="1">无法解析字幕数据</text>\n</transcript>';
-  }
-}
-
-/**
- * Extracts subtitle data from a YouTube page HTML
- * 
- * @param html - The HTML of the YouTube page
- * @param subtitleType - The subtitle type ('auto' or 'manual')
- * @param axiosConfig - The axios config for making requests
- * @param youtubeBaseUrl - The base URL to use for YouTube requests (may be a proxy)
- * @returns A promise that resolves to the subtitle data
- */
-async function extractSubtitleData(
-  html: string, 
-  subtitleType: 'auto' | 'manual',
-  axiosConfig: any,
-  youtubeBaseUrl: string = 'https://www.youtube.com'
-): Promise<string | null> {
-  try {
-    // 提取 ytInitialPlayerResponse
-    const match = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
-    if (!match) {
-      // 尝试其他方式提取配置
-      const altMatch = html.match(/"captions":({.+?}),"videoDetails"/);
-      if (!altMatch) {
-        throw new Error('无法找到视频配置信息');
-      }
-      return extractFromCaptionsData(altMatch[1], subtitleType, axiosConfig, youtubeBaseUrl);
-    }
-
-    let config;
-    try {
-      config = JSON.parse(match[1]);
-      console.log('Successfully parsed video config');
-    } catch (e) {
-      console.error('解析视频配置失败:', e);
-      // 尝试其他方式提取配置
-      const altMatch = html.match(/"captions":({.+?}),"videoDetails"/);
-      if (!altMatch) {
-        throw new Error('解析视频配置失败');
-      }
-      return extractFromCaptionsData(altMatch[1], subtitleType, axiosConfig, youtubeBaseUrl);
-    }
-
-    if (!config.captions?.playerCaptionsTracklistRenderer?.captionTracks) {
-      console.error('No caption tracks found in config');
-      throw new Error('该视频没有可用的字幕');
-    }
-
-    const captionTracks = config.captions.playerCaptionsTracklistRenderer.captionTracks;
-    console.log('找到字幕轨道:', captionTracks.length);
-    
-    // 记录所有可用的字幕轨道，以便调试
-    captionTracks.forEach((track: any, index: number) => {
-      console.log(`Track ${index}:`, {
-        languageCode: track.languageCode,
-        kind: track.kind,
-        name: track.name?.simpleText || 'Unknown',
-        isAuto: track.kind === 'asr'
-      });
-    });
-    
-    // 查找英文字幕
-    const englishTrack = captionTracks.find((track: any) => {
-      const isAuto = track.kind === 'asr';
-      const isEnglish = track.languageCode === 'en';
-      return subtitleType === 'auto' ? (isAuto && isEnglish) : (!isAuto && isEnglish);
-    });
-
-    if (!englishTrack) {
-      // 如果找不到英文字幕，尝试使用任何可用的字幕
-      console.log('找不到所选类型的英文字幕，尝试使用任何可用的字幕');
-      const anyTrack = captionTracks[0]; // 使用第一个可用的字幕轨道
-      if (!anyTrack) {
-        throw new Error('找不到所选类型的英文字幕，且没有其他可用字幕');
-      }
-      console.log('使用替代字幕轨道:', {
-        languageCode: anyTrack.languageCode,
-        kind: anyTrack.kind,
-        name: anyTrack.name?.simpleText || 'Unknown'
-      });
-      
-      // 可能需要修改URL，如果使用了代理
-      let trackUrl = anyTrack.baseUrl;
-      if (youtubeBaseUrl !== 'https://www.youtube.com') {
-        // 如果使用代理，需要替换URL中的域名
-        trackUrl = trackUrl.replace('https://www.youtube.com', youtubeBaseUrl);
-      }
-      
-      console.log('获取字幕URL:', trackUrl);
-      
-      // 获取字幕内容
-      const subtitleResponse = await fetchWithProxies(trackUrl, {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          'Referer': 'https://www.youtube.com/',
-          'Origin': 'https://www.youtube.com',
-        }
-      });
-
-      if (subtitleResponse.status !== 200) {
-        throw new Error(`获取字幕内容失败: ${subtitleResponse.status}`);
-      }
-
-      return subtitleResponse.data;
-    }
-
-    // 可能需要修改URL，如果使用了代理
-    let trackUrl = englishTrack.baseUrl;
-    if (youtubeBaseUrl !== 'https://www.youtube.com') {
-      // 如果使用代理，需要替换URL中的域名
-      trackUrl = trackUrl.replace('https://www.youtube.com', youtubeBaseUrl);
-    }
-    
-    console.log('获取字幕URL:', trackUrl);
-
-    // 获取字幕内容
-    const subtitleResponse = await fetchWithProxies(trackUrl, {
-      ...axiosConfig,
-      headers: {
-        ...axiosConfig.headers,
-        'Referer': 'https://www.youtube.com/',
-        'Origin': 'https://www.youtube.com',
-      }
-    });
-
-    if (subtitleResponse.status !== 200) {
-      throw new Error(`获取字幕内容失败: ${subtitleResponse.status}`);
-    }
-
-    return subtitleResponse.data;
-  } catch (error) {
-    console.error('提取字幕数据失败:', error);
-    throw error;
-  }
-}
-
-async function extractFromCaptionsData(
-  captionsJson: string,
-  subtitleType: 'auto' | 'manual',
-  axiosConfig: any,
-  youtubeBaseUrl: string = 'https://www.youtube.com'
-): Promise<string | null> {
-  try {
-    const captions = JSON.parse(captionsJson);
-    if (!captions.playerCaptionsTracklistRenderer?.captionTracks) {
-      throw new Error('该视频没有可用的字幕');
-    }
-
-    const captionTracks = captions.playerCaptionsTracklistRenderer.captionTracks;
-    
-    // 记录所有可用的字幕轨道，以便调试
-    captionTracks.forEach((track: any, index: number) => {
-      console.log(`Track ${index}:`, {
-        languageCode: track.languageCode,
-        kind: track.kind,
-        name: track.name?.simpleText || 'Unknown',
-        isAuto: track.kind === 'asr'
-      });
-    });
-    
-    const englishTrack = captionTracks.find((track: any) => {
-      const isAuto = track.kind === 'asr';
-      const isEnglish = track.languageCode === 'en';
-      return subtitleType === 'auto' ? (isAuto && isEnglish) : (!isAuto && isEnglish);
-    });
-
-    if (!englishTrack) {
-      // 如果找不到英文字幕，尝试使用任何可用的字幕
-      console.log('找不到所选类型的英文字幕，尝试使用任何可用的字幕');
-      const anyTrack = captionTracks[0]; // 使用第一个可用的字幕轨道
-      if (!anyTrack) {
-        throw new Error('找不到所选类型的英文字幕，且没有其他可用字幕');
-      }
-      console.log('使用替代字幕轨道:', {
-        languageCode: anyTrack.languageCode,
-        kind: anyTrack.kind,
-        name: anyTrack.name?.simpleText || 'Unknown'
-      });
-      
-      // 可能需要修改URL，如果使用了代理
-      let trackUrl = anyTrack.baseUrl;
-      if (youtubeBaseUrl !== 'https://www.youtube.com') {
-        // 如果使用代理，需要替换URL中的域名
-        trackUrl = trackUrl.replace('https://www.youtube.com', youtubeBaseUrl);
-      }
-      
-      console.log('获取字幕URL:', trackUrl);
-      
-      // 获取字幕内容
-      const subtitleResponse = await fetchWithProxies(trackUrl, {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          'Referer': 'https://www.youtube.com/',
-          'Origin': 'https://www.youtube.com',
-        }
-      });
-
-      if (subtitleResponse.status !== 200) {
-        throw new Error(`获取字幕内容失败: ${subtitleResponse.status}`);
-      }
-
-      return subtitleResponse.data;
-    }
-
-    // 可能需要修改URL，如果使用了代理
-    let trackUrl = englishTrack.baseUrl;
-    if (youtubeBaseUrl !== 'https://www.youtube.com') {
-      // 如果使用代理，需要替换URL中的域名
-      trackUrl = trackUrl.replace('https://www.youtube.com', youtubeBaseUrl);
-    }
-    
-    console.log('获取字幕URL:', trackUrl);
-
-    const subtitleResponse = await fetchWithProxies(trackUrl, {
-      ...axiosConfig,
-      headers: {
-        ...axiosConfig.headers,
-        'Referer': 'https://www.youtube.com/',
-        'Origin': 'https://www.youtube.com',
-      }
-    });
-
-    if (subtitleResponse.status !== 200) {
-      throw new Error(`获取字幕内容失败: ${subtitleResponse.status}`);
-    }
-
-    return subtitleResponse.data;
-  } catch (error) {
-    console.error('从备用数据提取字幕失败:', error);
-    throw error;
   }
 } 
