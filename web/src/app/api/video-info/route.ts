@@ -73,7 +73,7 @@ export async function GET(request: NextRequest) {
       timeout: 30000, // 增加超时时间到30秒
       maxRedirects: 5,
       decompress: true,
-      validateStatus: function (status) {
+      validateStatus: function (status: number) {
         return status >= 200 && status < 400;
       },
       responseType: 'text' as const,
